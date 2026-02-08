@@ -1,0 +1,5 @@
+{
+  "name": "HR Document RAG - Cloudinary & NeonDB",
+  "description": "Hệ thống RAG chuyên nghiệp: Cloudinary lưu trữ file PDF, NeonDB quản lý Metadata (JSON), Pinecone xử lý tìm kiếm Vector.",
+  "requestFramePermissions": []
+}

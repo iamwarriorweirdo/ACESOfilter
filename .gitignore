@@ -1,0 +1,51 @@
+
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+package-lock.json
+yarn.lock
+bun.lockb
+
+# Testing
+coverage
+
+# Production & Build
+build
+dist
+out
+.next
+
+# Misc
+.DS_Store
+*.pem
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment Variables (Sensitive Data)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Vercel
+.vercel
+
+# Project specific
+# Loại bỏ các file backup dữ liệu json tải về nằm trong thư mục code
+backup-system-*.json
+full_system_backup_*.json
+*.sqlite
+*.db
+
+# OS generated files
+Thumbs.db
+
+# Antigravity Agent Internal
+.agent/
+*.pyc
+__pycache__/

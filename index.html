@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HR Document AI - Professional RAG</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              background: 'rgb(var(--background) / <alpha-value>)',
+              foreground: 'rgb(var(--foreground) / <alpha-value>)',
+              card: 'rgb(var(--card) / <alpha-value>)',
+              border: 'rgb(var(--border) / <alpha-value>)',
+              muted: 'rgb(var(--muted) / <alpha-value>)',
+              'muted-foreground': 'rgb(var(--muted-foreground) / <alpha-value>)',
+              primary: 'rgb(var(--primary) / <alpha-value>)',
+              'primary-foreground': 'rgb(var(--primary-foreground) / <alpha-value>)',
+              secondary: 'rgb(var(--secondary) / <alpha-value>)',
+              'secondary-foreground': 'rgb(var(--secondary-foreground) / <alpha-value>)',
+              accent: 'rgb(var(--accent) / <alpha-value>)',
+            },
+            fontFamily: { sans: ['Inter', 'sans-serif'] },
+            animation: { 'fade-in': 'fadeIn 0.5s ease-out', 'slide-up': 'slideUp 0.5s ease-out' },
+            keyframes: {
+              fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+              slideUp: { '0%': { transform: 'translateY(20px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } }
+            }
+          },
+        },
+      }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/index.css">
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@^18.2.0",
+        "react-dom": "https://esm.sh/react-dom@^18.2.0",
+        "react-dom/": "https://esm.sh/react-dom@^18.2.0/",
+        "react/": "https://esm.sh/react@^18.2.0/",
+        "@google/genai": "https://esm.sh/@google/genai@*",
+        "lucide-react": "https://esm.sh/lucide-react@^0.300.0",
+        "react-markdown": "https://esm.sh/react-markdown@^9.0.0",
+        "@pinecone-database/pinecone": "https://esm.sh/@pinecone-database/pinecone@^3.0.0",
+        "xlsx": "https://esm.sh/xlsx@^0.18.5",
+        "mammoth": "https://esm.sh/mammoth@^1.6.0",
+        "@neondatabase/serverless": "https://esm.sh/@neondatabase/serverless@^0.10.4",
+        "cloudinary": "https://esm.sh/cloudinary@^2.8.0",
+        "groq-sdk": "https://esm.sh/groq-sdk@^0.37.0",
+        "@vercel/node": "https://esm.sh/@vercel/node@^5.5.17",
+        "vite": "https://esm.sh/vite@^7.3.1",
+        "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+        "module": "https://esm.sh/module@^2.0.0",
+        "@vercel/blob/": "https://esm.sh/@vercel/blob@^2.0.0/",
+        "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@^2.90.1",
+        "path": "https://esm.sh/path@^0.12.7",
+        "fs": "https://esm.sh/fs@^0.0.1-security",
+        "@vercel/blob": "https://esm.sh/@vercel/blob@^2.0.0",
+        "pdf-lib": "https://esm.sh/pdf-lib@^1.17.1",
+        "inngest/": "https://esm.sh/inngest@^3.49.3/",
+        "inngest": "https://esm.sh/inngest@^3.49.3"
+      }
+    }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
