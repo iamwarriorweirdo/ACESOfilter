@@ -2,6 +2,9 @@ import { neon } from '@neondatabase/serverless';
 import { v2 as cloudinary } from 'cloudinary';
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { Inngest } from 'inngest';
+
+const inngest = new Inngest({ id: "hr-rag-app" });
 
 // Fallback logic for various Vercel Database Integrations (Neon, Supabase, Postgres)
 const rawConnectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
@@ -335,6 +338,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const timestamp = Math.round(new Date().getTime() / 1000);
             const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
             return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
+        }
+
+        if (action === 'trigger-ingest') {
+             let body = req.body || {};
+             if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
+             const { url, fileName, fileType, docId } = body;
+             
+             if (!url || !docId) return res.status(400).json({ error: "Missing required fields" });
+
+             await inngest.send({
+                name: "app/process.file",
+                data: { url, fileName, fileType, docId }
+             });
+             return res.status(200).json({ success: true, message: "Ingest job triggered" });
         }
 
         if (action === 'analytics' || action === 'usage') {

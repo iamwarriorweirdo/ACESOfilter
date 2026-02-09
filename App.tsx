@@ -291,7 +291,8 @@ const App: React.FC = () => {
                     body: JSON.stringify(newDoc)
                 });
                 try {
-                    await fetch('/api/ingest', {
+                    // Use the safe handler to trigger ingest instead of calling /api/ingest directly
+                    await fetch('/api/app?handler=trigger-ingest', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ url, fileName: file.name, fileType: file.type, docId })
