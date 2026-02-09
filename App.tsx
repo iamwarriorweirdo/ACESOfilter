@@ -49,9 +49,9 @@ const App: React.FC = () => {
     const [config, setConfig] = useState<SystemConfig>({
         maintenanceMode: false,
         allowPublicUpload: false,
-        aiModel: 'gemini-3-flash',
-        ocrModel: 'gemini-3-flash',
-        analysisModel: 'gemini-2.5-flash',
+        aiModel: 'gemini-3-flash-preview',
+        ocrModel: 'gemini-3-flash-preview',
+        analysisModel: 'gemini-3-flash-preview',
         chatModel: 'gemini-2.5-flash-lite',
         maxFileSizeMB: 100
     });

@@ -45,6 +45,12 @@ async function safeAiCall(ai: any, params: any) {
   }
 }
 
+function sanitizeModelName(model: string): string {
+  if (model === 'gemini-3-flash') return 'gemini-3-flash-preview';
+  if (model === 'gemini-3-pro') return 'gemini-3-pro-preview';
+  return model;
+}
+
 const processFileInBackground = inngest.createFunction(
   {
     id: "process-file-background",
@@ -70,8 +76,11 @@ const processFileInBackground = inngest.createFunction(
         return null;
       });
 
-      const ocrModel = systemConfig?.ocrModel || 'gemini-3-flash-preview';
-      const analysisModel = systemConfig?.analysisModel || 'gemini-3-flash-preview';
+      const rawOcr = systemConfig?.ocrModel || 'gemini-3-flash-preview';
+      const rawAnalysis = systemConfig?.analysisModel || 'gemini-3-flash-preview';
+      
+      const ocrModel = sanitizeModelName(rawOcr);
+      const analysisModel = sanitizeModelName(rawAnalysis);
 
       const extraction = await step.run("ocr-and-extract", async () => {
           await updateDbStatus(docId, "Scanning & OCR");
