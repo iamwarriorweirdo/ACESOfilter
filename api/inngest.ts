@@ -38,8 +38,6 @@ async function updateDbStatus(docId: string, message: string, isError = false, a
     const newLogLine = `${logPrefix} ${message}`;
 
     if (append && !isError) {
-        // Just overwrite with the new log line for now as per previous logic, 
-        // effectively creating a "current status" stream in the UI console.
         await sql`UPDATE documents SET extracted_content = ${newLogLine} WHERE id = ${docId}`;
     } else {
         const finalMsg = isError ? `ERROR_DETAILS: ${message}` : message;
@@ -52,13 +50,23 @@ async function safeAiCall(ai: any, params: any, type: 'generate' | 'embed' = 'ge
   try {
     if (type === 'generate') return await ai.models.generateContent(params);
     
-    // Embed handling
+    // Embed handling with fallback
     const embedParams = { ...params };
     if (embedParams.content && !embedParams.contents) {
         embedParams.contents = [embedParams.content];
         delete embedParams.content;
     }
-    return await ai.models.embedContent(embedParams);
+    
+    try {
+        return await ai.models.embedContent(embedParams);
+    } catch (e: any) {
+         if (e.message?.includes("404") || e.status === 404 || e.code === 404) {
+            console.warn(`[Fallback] Embedding ${embedParams.model} failed (404) -> trying embedding-001`);
+            embedParams.model = "embedding-001";
+            return await ai.models.embedContent(embedParams);
+         }
+         throw e;
+    }
   } catch (error: any) {
     throw error;
   }
@@ -136,7 +144,6 @@ const processFileInBackground = inngest.createFunction(
         } 
         // 2. PDF
         else if (lowFileName.endsWith('.pdf') || lowFileType.includes('pdf')) {
-          // Try standard PDF parse first
           try {
               await updateDbStatus(docId, "Running PDF-Parse (Standard)...");
               // @ts-ignore
@@ -154,7 +161,6 @@ const processFileInBackground = inngest.createFunction(
              extractedText = fileBuffer.toString('utf-8');
              parseMethod = "raw-text";
         }
-        // 4. Others (Images, etc)
         else {
              needsAiVision = true;
         }
@@ -168,7 +174,6 @@ const processFileInBackground = inngest.createFunction(
           extractedText,
           parseMethod,
           needsAiVision,
-          // Only return base64 if needed for Vision, to save step payload size
           fileBase64: (needsAiVision && fileBuffer.length < 9 * 1024 * 1024) ? fileBuffer.toString('base64') : null
         };
       });
@@ -183,22 +188,15 @@ const processFileInBackground = inngest.createFunction(
           let base64 = parseResult.fileBase64;
           
           if (!base64) {
-            // Re-download if payload was too big to pass between steps or wasn't set
             const ab = await fetchFileBuffer(url);
             base64 = Buffer.from(ab).toString('base64');
           }
 
-          // Determine correct MIME for Gemini
-          // Gemini supports PDF, Image (PNG/JPEG/WEBP/HEIC/HEIF)
-          // It does NOT support DOCX. If we are here with DOCX, it means Mammoth failed. 
-          // We can't send DOCX bytes to Gemini inline.
-          let mime = 'image/png'; // Default fallback
+          let mime = 'image/png';
           if (fileName.toLowerCase().endsWith('.pdf')) mime = 'application/pdf';
           else if (fileName.toLowerCase().endsWith('.jpg') || fileName.toLowerCase().endsWith('.jpeg')) mime = 'image/jpeg';
           else if (fileName.toLowerCase().endsWith('.webp')) mime = 'image/webp';
           
-          // If it's a DOCX that failed mammoth, we can't easily OCR it with Gemini Inline unless we convert it to PDF first.
-          // But since this is a serverless function, we might just fail here or try to treat as text if desperate.
           if (fileName.toLowerCase().endsWith('.docx')) {
              if (!text) throw new Error("DOCX Parsing failed and Gemini does not support DOCX inline OCR.");
           }
@@ -230,7 +228,6 @@ const processFileInBackground = inngest.createFunction(
       await step.run("finalize-metadata-and-vector", async () => {
           await updateDbStatus(docId, "Generating Metadata & Indexing JSON...");
           
-          // Metadata Extraction
           const metaRes = await safeAiCall(ai, {
               model: analysisModel,
               contents: [{
@@ -256,10 +253,8 @@ const processFileInBackground = inngest.createFunction(
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
           
-          // Save valid JSON to DB
           await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
 
-          // Embedding
           const embText = `File: ${fileName}\nTitle: ${fullMetadata.title}\nSummary: ${fullMetadata.summary}\nContent: ${extractedContent.substring(0, 2000)}`;
           const embRes = await safeAiCall(ai, {
               model: "text-embedding-004",
@@ -289,4 +284,3 @@ export default serve({
   client: inngest,
   functions: [processFileInBackground],
 });
-    

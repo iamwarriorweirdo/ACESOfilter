@@ -1,3 +1,4 @@
+
 // DO fix: use correct text access and Pinecone upsert format
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
@@ -62,19 +63,8 @@ async function updateDbStatus(docId: string, message: string, isError = false, a
     const newLogLine = `${logPrefix} ${message}`;
 
     if (append && !isError) {
-        // Fetch current content to append logic (simplified: we just overwrite with history in real app, but here we construct a log string)
-        // For simplicity in this demo, we will just set the status to the latest log line combined with a marker for the frontend to know it's a log
-        // In a production app, you'd append to a JSON array or a text column.
-        // Here we simulate a "Log Stream" by fetching first (optional) or just updating.
-        // To keep it simple and stateless for Inngest, we'll just write the current step. 
-        // The Frontend will handle "accumulating" history if it was polling, OR we return a multiline string if we want to persist history.
-        // Let's rely on the frontend to visualize the "Current Step" or we can try to append if we fetch.
-        
-        // Strategy: Just write the latest status. The frontend will show "Last Update: ..."
-        // OR better: use a specific format: "LOG_STREAM:..."
         await sql`UPDATE documents SET extracted_content = ${newLogLine} WHERE id = ${docId}`;
     } else {
-        // Final error or overwrite
         const finalMsg = isError ? `ERROR_DETAILS: ${message}` : message;
         await sql`UPDATE documents SET extracted_content = ${finalMsg} WHERE id = ${docId}`;
     }
@@ -155,14 +145,25 @@ async function safeAiCall(ai: any, params: any, type: 'generate' | 'embed' = 'ge
   const model = params.model || 'unknown';
   try {
     let result;
-    if (type === 'generate') result = await ai.models.generateContent(params);
-    else {
+    if (type === 'generate') {
+        result = await ai.models.generateContent(params);
+    } else {
       const embedParams = { ...params };
       if ((embedParams as any).content && !(embedParams as any).contents) {
         (embedParams as any).contents = [(embedParams as any).content];
         delete (embedParams as any).content;
       }
-      result = await ai.models.embedContent(embedParams);
+      try {
+          result = await ai.models.embedContent(embedParams);
+      } catch (e: any) {
+          if (e.message?.includes("404") || e.status === 404 || e.code === 404) {
+              console.warn(`[Fallback] Embedding ${embedParams.model} 404 -> embedding-001`);
+              embedParams.model = "embedding-001";
+              result = await ai.models.embedContent(embedParams);
+          } else {
+              throw e;
+          }
+      }
     }
 
     const duration = Date.now() - start;

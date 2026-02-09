@@ -222,11 +222,15 @@ const UserView: React.FC<UserViewProps> = ({
                                         <div className="text-muted-foreground italic font-black text-xs uppercase tracking-[0.3em] opacity-30">{t.dbEmpty}</div>
                                     </div>
                                 ) : (
-                                    visibleFiles.map((doc) => (
+                                    visibleFiles.map((doc) => {
+                                        const isError = doc.status?.toLowerCase().includes("lỗi") || doc.status?.toLowerCase().includes("error");
+                                        const isIndexed = doc.status?.toLowerCase().includes("thành công") || doc.status?.toLowerCase().includes("indexed");
+                                        
+                                        return (
                                         <div
                                             key={doc.id}
                                             onDoubleClick={() => onViewDocument(doc.name)}
-                                            className="group px-10 py-6 flex items-center justify-between hover:bg-primary/5 transition-all gap-8 cursor-pointer select-none relative overflow-hidden"
+                                            className={`group px-10 py-6 flex items-center justify-between hover:bg-primary/5 transition-all gap-8 cursor-pointer select-none relative overflow-hidden ${isError ? 'border-l-4 border-l-red-500' : ''}`}
                                         >
                                             <div className="absolute inset-0 bg-gradient-to-r from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                                             <div className="flex items-center gap-6 flex-1 min-w-0 relative z-10">
@@ -234,7 +238,10 @@ const UserView: React.FC<UserViewProps> = ({
                                                     <div className="group-hover:scale-110 transition-transform">{getFileIcon(doc)}</div>
                                                 </div>
                                                 <div className="min-w-0 space-y-1.5">
-                                                    <div className="font-black text-base truncate text-foreground group-hover:text-primary transition-colors tracking-tight">{doc.name}</div>
+                                                    <div className="font-black text-base truncate text-foreground group-hover:text-primary transition-colors tracking-tight flex items-center gap-2">
+                                                        {doc.name}
+                                                        {isError && <span className="bg-red-500/10 text-red-500 text-[8px] px-1.5 py-0.5 rounded-full border border-red-500/20 font-black">FAILED</span>}
+                                                    </div>
                                                     <div className="text-[10px] text-muted-foreground flex items-center gap-3 font-black uppercase tracking-widest opacity-60">
                                                         <span className="text-blue-500/80">{(doc.size / 1024).toFixed(0)} KB</span>
                                                         <div className="w-1 h-1 rounded-full bg-white/20" />
@@ -260,7 +267,7 @@ const UserView: React.FC<UserViewProps> = ({
                                                 </button>
                                             </div>
                                         </div>
-                                    ))
+                                    )})
                                 )}
                             </div>
                         </div>

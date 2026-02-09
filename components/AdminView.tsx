@@ -326,12 +326,11 @@ const AdminView: React.FC<AdminViewProps> = ({
                                                 </div>
                                             ) : (
                                                 visibleFiles.map((doc) => {
-                                                    const isScanning = doc.status?.toLowerCase().includes("scanning") || doc.status?.toLowerCase().includes("OCR");
-                                                    const isIndexed = doc.status?.toLowerCase().includes("thành công") || doc.status?.toLowerCase().includes("indexed") || doc.status?.toLowerCase().includes("v3.0");
                                                     const isError = doc.status?.toLowerCase().includes("lỗi") || doc.status?.toLowerCase().includes("error");
-
+                                                    const isIndexed = doc.status?.toLowerCase().includes("thành công") || doc.status?.toLowerCase().includes("indexed") || doc.status?.toLowerCase().includes("v3.0");
+                                                    
                                                     return (
-                                                        <div key={doc.id} onDoubleClick={() => onEditDoc(doc)} className={`px-8 py-6 flex flex-col md:flex-row md:items-center justify-between hover:bg-primary/5 transition-all gap-6 group cursor-pointer select-none relative ${isScanning ? 'status-glow-indigo' : isIndexed ? 'status-glow-emerald' : isError ? 'border-red-500/20' : ''}`}>
+                                                        <div key={doc.id} onDoubleClick={() => onEditDoc(doc)} className={`px-8 py-6 flex flex-col md:flex-row md:items-center justify-between hover:bg-primary/5 transition-all gap-6 group cursor-pointer select-none relative ${isError ? 'border-red-500/20' : ''}`}>
                                                             <div className="absolute inset-0 bg-gradient-to-r from-primary/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                                                             <div className="flex items-center gap-6 min-w-0 relative z-10">
                                                                 <div className="w-14 h-14 rounded-2xl bg-card border border-white/10 flex items-center justify-center shrink-0 shadow-2xl group-hover:scale-110 group-hover:-rotate-3 transition-all duration-500">
@@ -340,16 +339,12 @@ const AdminView: React.FC<AdminViewProps> = ({
                                                                 <div className="min-w-0 space-y-1.5">
                                                                     <div className="font-black text-sm lg:text-base truncate text-foreground tracking-tight group-hover:text-primary transition-colors flex items-center gap-2">
                                                                         {doc.name}
-                                                                        {isIndexed && <span className="bg-emerald-500/10 text-emerald-500 text-[8px] px-1.5 py-0.5 rounded-full border border-emerald-500/20 font-black animate-pulse">KV-STORED</span>}
-                                                                        {isScanning && <span className="bg-indigo-500/10 text-indigo-500 text-[8px] px-1.5 py-0.5 rounded-full border border-indigo-500/20 font-black animate-pulse">SCANNING</span>}
                                                                         {isError && <span className="bg-red-500/10 text-red-500 text-[8px] px-1.5 py-0.5 rounded-full border border-red-500/20 font-black">FAILED</span>}
                                                                     </div>
                                                                     <div className="text-[10px] text-muted-foreground flex flex-wrap gap-3 items-center font-black uppercase tracking-widest opacity-60">
                                                                         <span className="text-blue-500/80 bg-blue-500/5 px-2 py-0.5 rounded-md border border-blue-500/10">{(doc.size / 1024).toFixed(1)} KB</span>
                                                                         <div className="w-1 h-1 rounded-full bg-border" />
                                                                         <span>{new Date(doc.uploadDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                                                                        <div className="w-1 h-1 rounded-full bg-border" />
-                                                                        <span className={isError ? "text-red-400" : isScanning ? "text-indigo-400" : "text-emerald-400"}>{doc.status}</span>
                                                                         {searchTerm && <div className="flex items-center gap-2"><div className="w-1 h-1 rounded-full bg-border" /><span className="text-indigo-400 font-black">ARCHIVE: {getLocalizedFolderName(folders.find(f => f.id === doc.folderId)?.name || 'Root')}</span></div>}
                                                                     </div>
                                                                 </div>

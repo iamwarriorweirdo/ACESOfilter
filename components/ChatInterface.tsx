@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Message, Role, ChatSession, Language, Document } from '../types';
-import { Send, Bot, User, Cpu, FileText, ExternalLink, Plus, MessageSquare, Trash2, Menu, X, Download, File, ArrowUpRight } from 'lucide-react';
+import { Send, Bot, User, Cpu, FileText, ExternalLink, Plus, MessageSquare, Trash2, Menu, X, Download, File, ArrowUpRight, Eye } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { TRANSLATIONS } from '../constants';
 
@@ -35,7 +35,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleDownloadFile = (filename: string) => {
     const doc = documents.find(d => d.name === filename);
-    if (!doc || doc.size === 0) return;
+    if (!doc) return;
     try {
       if (doc.content.startsWith('data:')) {
         const link = window.document.createElement('a');
@@ -63,9 +63,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     return documents.find(d => d.name.startsWith(trimmed) || trimmed.endsWith(d.name) || d.name.includes(trimmed));
   };
 
-  const FILE_REF_PREFIX = '#view-doc:';
-  const contentWithFileLinks = (raw: string) =>
-    raw.replace(/\[\[File:\s*([^\]]*?)\]\]/g, (_, name) => `[📎 ${name.trim()}](${FILE_REF_PREFIX}${encodeURIComponent(name.trim())})`);
+  // Remove the citation tags from text for cleaner reading, we render card at bottom instead
+  const cleanContent = (raw: string) => raw.replace(/\[\[File:\s*([^\]]*?)\]\]/g, '').trim();
 
   const renderContent = (content: string) => {
     const fileRegex = /\[\[File:\s*([^\]]*?)\]\]/g;
@@ -74,62 +73,44 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     return (
       <div className="space-y-4">
         <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-          <ReactMarkdown
-            components={{
-              a: ({ href, children }) => {
-                if (href?.startsWith(FILE_REF_PREFIX)) {
-                  const name = decodeURIComponent(href.slice(FILE_REF_PREFIX.length));
-                  const doc = findDocByRef(name);
-                  return (
-                    <span className="inline-flex items-center gap-1 align-middle mx-0.5">
-                      <span className="px-1.5 py-0.5 rounded bg-primary/15 text-primary text-xs font-medium border border-primary/30">
-                        📎 {children}
-                      </span>
-                      {doc && (
-                        <>
-                          <button type="button" onClick={() => onViewDocument?.(doc.name)} className="text-xs text-primary hover:underline" title="Mở tài liệu">Mở</button>
-                          <button type="button" onClick={() => handleDownloadFile(doc.name)} className="text-muted-foreground hover:text-foreground p-0.5" title="Tải xuống tài liệu"><Download size={12} /></button>
-                        </>
-                      )}
-                    </span>
-                  );
-                }
-                return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
-              }
-            }}
-          >
-            {contentWithFileLinks(content)}
+          <ReactMarkdown>
+            {cleanContent(content)}
           </ReactMarkdown>
         </div>
         {uniqueFileRefs.length > 0 && (
-          <div className="flex flex-col gap-3 mt-2">
-            <p className="text-xs font-medium text-muted-foreground">Tài liệu tham chiếu</p>
+          <div className="flex flex-col gap-3 mt-4 pt-4 border-t border-white/10">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground opacity-70">Tài liệu đính kèm</p>
             {uniqueFileRefs.map((ref, idx) => {
               const doc = findDocByRef(ref);
-              if (!doc || doc.size === 0) return null;
-              const sizeMB = (doc.size / (1024 * 1024)).toFixed(2);
+              // Fallback UI if doc not found in state but cited
+              const docName = doc ? doc.name : ref;
+              const sizeMB = doc ? (doc.size / (1024 * 1024)).toFixed(2) : '?';
+              
               return (
-                <div key={idx} className="flex items-center gap-4 p-3 rounded-xl border border-border bg-card hover:bg-muted/50 transition-all group shadow-sm max-w-md">
-                  <div className="w-10 h-10 rounded-lg bg-blue-500/10 text-blue-600 flex items-center justify-center shrink-0">
-                    <FileText size={20} />
+                <div key={idx} className="flex items-center gap-4 p-4 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all group shadow-lg max-w-xl">
+                  <div className="w-12 h-12 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0 border border-blue-500/20">
+                    <FileText size={24} />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-bold text-sm truncate text-foreground">{doc.name}</div>
-                    <div className="text-xs text-muted-foreground flex gap-2">
-                      <span>{sizeMB} MB</span>
-                      <span>• Xem / Tải xuống</span>
+                    <div className="font-bold text-sm truncate text-foreground mb-1" title={docName}>{docName}</div>
+                    <div className="text-[10px] font-medium text-muted-foreground flex gap-2">
+                      <span className="bg-white/5 px-1.5 py-0.5 rounded">{doc ? doc.type.split('/').pop()?.toUpperCase() : 'DOC'}</span>
+                      <span className="px-1.5 py-0.5">{sizeMB} MB</span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-2">
+                    {doc && onViewDocument && (
+                        <button
+                        onClick={() => onViewDocument(doc.name)}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 transition-all font-bold text-xs shadow-lg shadow-primary/20"
+                        title="Xem tài liệu ngay"
+                        >
+                        <Eye size={14} /> Xem
+                        </button>
+                    )}
                     <button
-                      onClick={() => onViewDocument?.(doc.name)}
-                      className="p-2 rounded-lg bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground transition-all font-bold text-xs flex items-center gap-1"
-                    >
-                      <ArrowUpRight size={14} /> Mở
-                    </button>
-                    <button
-                      onClick={() => handleDownloadFile(doc.name)}
-                      className="p-2 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+                      onClick={() => handleDownloadFile(docName)}
+                      className="p-2.5 rounded-xl text-muted-foreground hover:bg-white/10 hover:text-foreground transition-all border border-transparent hover:border-white/10"
                       title="Tải xuống"
                     >
                       <Download size={16} />
@@ -226,7 +207,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     ? 'bg-primary/90 text-white border-primary rounded-tr-none'
                     : 'glass-panel border-white/10 rounded-tl-none'
                     }`}>
-                    <div className="text-sm font-black leading-relaxed tracking-tight">
+                    <div className="text-sm font-medium leading-relaxed tracking-wide">
                       {renderContent(msg.content)}
                     </div>
                   </div>
