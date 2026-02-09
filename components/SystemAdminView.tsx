@@ -101,6 +101,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                         <optgroup label="Google Gemini">
                                             <option value="gemini-3-flash-preview">Gemini 3.0 Flash (Recommended)</option>
                                             <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                            <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash (Stable)</option>
                                         </optgroup>
                                         <optgroup label="OpenAI (Free Tier Eligible)">
                                             <option value="gpt-4o-mini">GPT-4o Mini (Vision Capable)</option>
@@ -136,6 +137,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
                                     >
                                         <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+                                        <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash</option>
                                         <option value="gpt-4o-mini">OpenAI GPT-4o Mini</option>
                                         <option value="llama-3.3-70b-versatile">Groq Llama 3.3 70B (Fast JSON)</option>
                                         <option value="mixtral-8x7b-32768">Groq Mixtral 8x7B</option>
@@ -152,6 +154,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
                                             <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
                                             <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                            <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash (Backup)</option>
                                         </optgroup>
                                         <optgroup label="Groq (High Speed)">
                                             <option value="llama-3.3-70b-versatile">Llama 3.3 70B Versatile</option>

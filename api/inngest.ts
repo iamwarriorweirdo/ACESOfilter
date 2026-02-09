@@ -87,7 +87,7 @@ async function callHFInference(buffer: Buffer, modelId: string) {
     // Determine payload type based on model
     const isPhi3 = modelId.toLowerCase().includes('phi-3') || modelId.toLowerCase().includes('vision');
     
-    let body: any;
+    let reqBody: any;
     let contentType = "application/octet-stream";
 
     if (isPhi3) {
@@ -96,7 +96,7 @@ async function callHFInference(buffer: Buffer, modelId: string) {
         const dataUri = `data:image/jpeg;base64,${base64Image}`;
         
         // Standard payload for HF Inference API for VLM (User/Assistant structure)
-        body = JSON.stringify({
+        reqBody = JSON.stringify({
             inputs: {
                 image: base64Image, // Some endpoints take base64 directly
                 prompt: `<|user|>\n<|image_1|>\nOCR Task: Extract ALL text from this image verbatim. Do not summarize. Just return the text content.\n<|end|>\n<|assistant|>\n`
@@ -106,13 +106,14 @@ async function callHFInference(buffer: Buffer, modelId: string) {
         contentType = "application/json";
     } else {
         // Florence-2 and generic image-to-text often accept raw bytes
-        body = buffer;
+        reqBody = buffer;
     }
 
     const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
         headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
         method: "POST",
-        body: body,
+        // Cast to any to avoid TS2769 error in Node environment where Buffer is acceptable but types are strict
+        body: reqBody as any,
     });
     
     const result = await response.json();

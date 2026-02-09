@@ -231,25 +231,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         // --- FAILOVER CHAIN ---
         try {
-            // Failover 1: Groq Llama 3.3 (Very Stable)
-            res.write("\n\n[FAILOVER]: Model chính bận, chuyển sang Llama-3.3 (Groq)...\n\n");
-            await tryGroq("llama-3.3-70b-versatile");
-        } catch (groqError: any) {
+             // Failover 0: Try Gemini 1.5 Flash (Stable)
+             if (!selectedModel.includes('1.5')) {
+                 res.write("\n\n[FAILOVER]: Model chính bận, chuyển sang Gemini 1.5 Flash...\n\n");
+                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+                 const chat = await ai.models.generateContentStream({
+                    model: 'gemini-1.5-flash-latest',
+                    contents: [
+                        { role: 'user', parts: [{ text: systemInstruction }] },
+                        ...messages.map((m: any) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }))
+                    ]
+                 });
+                 for await (const chunk of chat) { if (chunk.text) res.write(chunk.text); }
+                 return;
+             }
+             throw new Error("Gemini 1.5 also failed");
+        } catch(geminiErr) {
             try {
-                // Failover 2: OpenAI GPT-4o Mini (If key exists)
-                if (process.env.OPENAI_API_KEY) {
-                    res.write("\n\n[FAILOVER]: Groq bận, chuyển sang GPT-4o Mini...\n\n");
-                    await tryOpenAI("gpt-4o-mini");
-                } else {
-                     throw new Error("No OpenAI Key for failover");
+                // Failover 1: Groq Llama 3.3 (Very Stable)
+                res.write("\n\n[FAILOVER]: Gemini bận, chuyển sang Llama-3.3 (Groq)...\n\n");
+                await tryGroq("llama-3.3-70b-versatile");
+            } catch (groqError: any) {
+                try {
+                    // Failover 2: OpenAI GPT-4o Mini (If key exists)
+                    if (process.env.OPENAI_API_KEY) {
+                        res.write("\n\n[FAILOVER]: Groq bận, chuyển sang GPT-4o Mini...\n\n");
+                        await tryOpenAI("gpt-4o-mini");
+                    } else {
+                        throw new Error("No OpenAI Key for failover");
+                    }
+                } catch (openAiError) {
+                    // Failover 3: Hugging Face (Mistral) - Last Resort
+                    console.warn("All primary/secondary failed, switching to Hugging Face.");
+                    res.write("\n\n[CRITICAL FAILOVER]: Đang sử dụng Hugging Face Engine...\n\n");
+                    const hfPrompt = `<s>[INST] ${systemInstruction}\n\nUser Question: ${userQuery} [/INST]`;
+                    const hfText = await queryHuggingFace(hfPrompt);
+                    res.write(hfText);
                 }
-            } catch (openAiError) {
-                 // Failover 3: Hugging Face (Mistral) - Last Resort
-                 console.warn("All primary/secondary failed, switching to Hugging Face.");
-                 res.write("\n\n[CRITICAL FAILOVER]: Đang sử dụng Hugging Face Engine...\n\n");
-                 const hfPrompt = `<s>[INST] ${systemInstruction}\n\nUser Question: ${userQuery} [/INST]`;
-                 const hfText = await queryHuggingFace(hfPrompt);
-                 res.write(hfText);
             }
         }
     }
