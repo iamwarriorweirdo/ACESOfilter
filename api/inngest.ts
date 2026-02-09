@@ -138,6 +138,7 @@ const processFileInBackground = inngest.createFunction(
             method = "docx-jszip";
           }
         } else if (lowName.endsWith('.pdf')) {
+          // @ts-ignore
           const pdfParse = await import('pdf-parse');
           const pdfExtractor = pdfParse.default || pdfParse;
           const data = await pdfExtractor(buffer);

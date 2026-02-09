@@ -53,14 +53,21 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
         const inputUser = (username || '').trim();
         const inputPass = (password || '').trim();
 
+        console.log(`[Login Attempt] User: '${inputUser}' | Env Admin: '${sysAdminUser}'`);
+        console.log(`[Login Debug] Env Pass Set: ${!!sysAdminPass}, Length: ${sysAdminPass?.length || 0}`);
+
         if (!sysAdminPass) {
             console.error("CRITICAL: ADMIN_PASSWORD environment variable is NOT SET.");
-            // Log để debug trên Vercel (Lưu ý: không log password ra console)
             console.log("Current Env Vars keys:", Object.keys(process.env).filter(k => k.startsWith('ADMIN_')));
         } 
         // So sánh: Username không phân biệt hoa thường, Password phân biệt hoa thường
-        else if (sysAdminUser && inputUser.toLowerCase() === sysAdminUser.toLowerCase() && inputPass === sysAdminPass) {
-            return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
+        else if (sysAdminUser && inputUser.toLowerCase() === sysAdminUser.toLowerCase()) {
+            if (inputPass === sysAdminPass) {
+                console.log("[Login] Superadmin SUCCESS via Env Var");
+                return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
+            } else {
+                console.warn(`[Login] Superadmin Password Mismatch. Input len: ${inputPass.length}, Expected len: ${sysAdminPass.length}`);
+            }
         }
         
         try {
@@ -69,8 +76,6 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
             const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
             if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
         } catch (e: any) {
-            // Nếu lỗi kết nối DB nhưng user nhập đúng admin pass thì vẫn cho vào (Fallback mode)
-            // Tuy nhiên logic trên đã return rồi, đây là trường hợp user thường.
             return res.status(500).json({ error: `Lỗi Database: ${e.message}` });
         }
         return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu." });
