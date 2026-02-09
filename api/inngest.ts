@@ -33,17 +33,54 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
   } catch (e) { }
 }
 
-async function getHFEmbedding(text: string) {
+// Advanced HF Inference for Vision Models
+async function callHFInference(buffer: Buffer, modelId: string) {
     const hfKey = process.env.HUGGING_FACE_API_KEY;
-    if (!hfKey) return null;
-    try {
-        const response = await fetch("https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2", {
-            headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": "application/json" },
-            method: "POST",
-            body: JSON.stringify({ inputs: text.substring(0, 512) }),
+    if (!hfKey) throw new Error("Missing HUGGING_FACE_API_KEY");
+    
+    // Determine payload type based on model
+    const isPhi3 = modelId.toLowerCase().includes('phi-3') || modelId.toLowerCase().includes('vision');
+    
+    let body: any;
+    let contentType = "application/octet-stream";
+
+    if (isPhi3) {
+        // Phi-3-vision and other Instruct VLMs typically require a JSON payload with instructions
+        const base64Image = buffer.toString('base64');
+        const dataUri = `data:image/jpeg;base64,${base64Image}`;
+        
+        // Standard payload for HF Inference API for VLM (User/Assistant structure)
+        body = JSON.stringify({
+            inputs: {
+                image: base64Image, // Some endpoints take base64 directly
+                prompt: `<|user|>\n<|image_1|>\nOCR Task: Extract ALL text from this image verbatim. Do not summarize. Just return the text content.\n<|end|>\n<|assistant|>\n`
+            },
+            parameters: { max_new_tokens: 2000 }
         });
-        return await response.json();
-    } catch (e) { return null; }
+        contentType = "application/json";
+    } else {
+        // Florence-2 and generic image-to-text often accept raw bytes
+        body = buffer;
+    }
+
+    const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+        headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
+        method: "POST",
+        body: body,
+    });
+    
+    const result = await response.json();
+    
+    // Error handling
+    if (result.error) {
+         throw new Error(`HF Error: ${result.error}`);
+    }
+
+    // Parsing strategies
+    if (Array.isArray(result) && result[0]?.generated_text) return result[0].generated_text;
+    if (result.generated_text) return result.generated_text;
+    
+    return typeof result === 'string' ? result : JSON.stringify(result);
 }
 
 async function extractDocxRawTextFallback(buffer: Buffer): Promise<string> {
@@ -66,6 +103,18 @@ const processFileInBackground = inngest.createFunction(
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
     try {
+      // 1. Fetch Config to check for Preferred OCR Model
+      const configStep = await step.run("get-config", async () => {
+         const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+         if (!dbUrl) return {};
+         const { neon } = await import('@neondatabase/serverless');
+         const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
+         const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
+         return rows.length > 0 ? JSON.parse(rows[0].data) : {};
+      });
+      
+      const preferredOcrModel = configStep.ocrModel || 'gemini-3-flash-preview';
+
       const parseResult = await step.run("extract-text", async () => {
         await updateDbStatus(docId, `Bắt đầu xử lý: ${fileName}`);
         const ab = await fetchFileBuffer(url);
@@ -95,27 +144,60 @@ const processFileInBackground = inngest.createFunction(
           text = data.text;
           method = "pdf-parse";
         }
-        return { text, method, bufferBase64: buffer.toString('base64') };
+        return { text, method, bufferBase64: buffer.toString('base64'), buffer };
       });
 
       const finalResult = await step.run("ocr-and-failover", async () => {
         let text = parseResult.text;
         let method = parseResult.method;
 
-        if (!text || text.trim().length < 5) {
+        // Condition to trigger AI OCR:
+        // 1. Text too short/garbage
+        // 2. Explicitly selected HF or Phi-3
+        // 3. Explicitly selected Gemini Vision
+        const isAIRequired = !text || text.trim().length < 20 || 
+                             preferredOcrModel.includes('huggingface') || 
+                             preferredOcrModel.includes('florence') ||
+                             preferredOcrModel.includes('phi-3') ||
+                             preferredOcrModel.includes('vision');
+
+        if (isAIRequired) {
           try {
-            await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
-            const res = await ai.models.generateContent({
-              model: 'gemini-3-flash-preview',
-              contents: [{ role: 'user', parts: [
-                { inlineData: { data: parseResult.bufferBase64, mimeType: 'application/octet-stream' } },
-                { text: "Trích xuất toàn bộ văn bản từ tài liệu này." }
-              ]}]
-            });
-            text = res.text || "";
-            method = "gemini-ocr-vision";
-          } catch (e) {
-            throw new Error("OCR Thất bại.");
+             if (preferredOcrModel.includes('huggingface') || preferredOcrModel.includes('florence') || preferredOcrModel.includes('phi-3')) {
+                 const modelId = preferredOcrModel.includes('/') ? preferredOcrModel : "microsoft/Florence-2-base";
+                 await updateDbStatus(docId, `Chuyển sang HF Inference: ${modelId}...`);
+                 
+                 const buf = Buffer.isBuffer(parseResult.buffer) ? parseResult.buffer : Buffer.from(parseResult.buffer as any);
+                 text = await callHFInference(buf, modelId);
+                 method = modelId.split('/')[1] || "hf-model";
+             } else {
+                await updateDbStatus(docId, "Sử dụng Gemini 3.0 Vision OCR...");
+                const res = await ai.models.generateContent({
+                  model: 'gemini-3-flash-preview',
+                  contents: [{ role: 'user', parts: [
+                    { inlineData: { data: parseResult.bufferBase64, mimeType: 'application/octet-stream' } },
+                    { text: "OCR Task: Extract all text from this image/document accurately." }
+                  ]}]
+                });
+                text = res.text || "";
+                method = "gemini-ocr-vision";
+             }
+          } catch (e: any) {
+            await updateDbStatus(docId, `OCR Error (${method}): ${e.message}. Retrying with Gemini Fallback...`);
+            // Fallback to Gemini if HF fails
+             try {
+                const res = await ai.models.generateContent({
+                  model: 'gemini-3-flash-preview',
+                  contents: [{ role: 'user', parts: [
+                    { inlineData: { data: parseResult.bufferBase64, mimeType: 'application/octet-stream' } },
+                    { text: "Recover text content from this file." }
+                  ]}]
+                });
+                text = res.text || text; // Use Gemini text if successful
+                if (res.text) method = "gemini-fallback";
+             } catch (geminiErr) {
+                 if (!text) throw new Error("All OCR methods failed.");
+             }
           }
         }
         return { text, method };
@@ -124,14 +206,17 @@ const processFileInBackground = inngest.createFunction(
       await step.run("indexing", async () => {
           let meta = { title: fileName, summary: "Tài liệu", key_information: [], language: "vi" };
           try {
+             // Sử dụng model được cấu hình để phân tích JSON
+             const analysisModel = configStep.analysisModel || 'gemini-3-flash-preview';
              const res = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: analysisModel,
                 contents: [{ role: 'user', parts: [{ text: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }] }],
                 config: { responseMimeType: 'application/json' }
              });
              meta = JSON.parse(res.text || "{}");
           } catch (e) {
              try {
+                // Failover sang Groq
                 const groqRes = await groq.chat.completions.create({
                     messages: [{ role: "user", content: `JSON metadata cho văn bản: ${finalResult.text.substring(0, 3000)}` }],
                     model: "llama-3.1-70b-versatile",

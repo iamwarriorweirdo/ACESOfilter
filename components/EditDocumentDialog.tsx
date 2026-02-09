@@ -34,8 +34,9 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const logContainerRef = useRef<HTMLDivElement>(null);
     const t = (TRANSLATIONS as any)[language] || TRANSLATIONS.en;
 
+    // Updated Proxy URL to use merged handler
     const getProxyUrl = (originalUrl: string) => {
-        return `/api/proxy?url=${encodeURIComponent(originalUrl.replace('http://', 'https://'))}`;
+        return `/api/app?handler=proxy&url=${encodeURIComponent(originalUrl.replace('http://', 'https://'))}`;
     };
 
     useEffect(() => {
