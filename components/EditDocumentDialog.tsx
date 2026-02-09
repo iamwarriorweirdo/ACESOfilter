@@ -179,7 +179,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                     <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mb-6 animate-pulse">
                         <Clock className="w-10 h-10 text-amber-500" />
                     </div>
-                    <h3 className="text-xl font-bold text-amber-500 mb-2">Process Timeout (>5 Min)</h3>
+                    <h3 className="text-xl font-bold text-amber-500 mb-2">Process Timeout (&gt;5 Min)</h3>
                     <p className="text-muted-foreground text-sm max-w-md mb-8">
                         The indexing pipeline is stalled or the file is extremely large. 
                         The system has stopped polling to save resources.
@@ -336,7 +336,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                     {/* Footer Actions */}
                     <div className="p-4 bg-white/5 border-t border-white/10 flex justify-between items-center">
                         <div className="text-[10px] text-gray-500">
-                             Use 'Force Re-Scan' if process hangs > 3 min.
+                             Use 'Force Re-Scan' if process hangs &gt; 3 min.
                         </div>
                         <button onClick={forceRescan} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-2 shadow-lg hover:shadow-blue-500/20">
                             <RefreshCcw size={12} /> Force Re-Trigger
