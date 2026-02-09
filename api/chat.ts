@@ -97,9 +97,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const systemInstruction = `Bạn là Trợ lý HR thông minh. Nhiệm vụ: Hỗ trợ người dùng dựa trên tài liệu được cung cấp (CONTEXT).
 
     QUY TẮC XỬ LÝ QUAN TRỌNG:
-    1. Ưu tiên hàng đầu: NẾU tìm thấy file trong CONTEXT có tên liên quan đến câu hỏi, NHƯNG nội dung file trong CONTEXT bị rỗng, đang xử lý (Scanning/OCR), hoặc không đủ để trả lời chi tiết:
-       - HÃY TRẢ LỜI NGẮN GỌN: "Tôi tìm thấy tài liệu liên quan là [Tên file]. Tuy nhiên, nội dung chi tiết đang được xử lý hoặc chưa thể đọc được. Bạn vui lòng xem trực tiếp file đính kèm bên dưới."
-       - TUYỆT ĐỐI KHÔNG tự bịa ra câu trả lời hoặc trả lời chung chung dựa trên kiến thức ngoài để tránh gây nhiễu.
+    1. Ưu tiên hàng đầu: NẾU tìm thấy file trong CONTEXT có tên liên quan đến câu hỏi, NHƯNG nội dung file trong CONTEXT bị rỗng, đang xử lý (Scanning/OCR/Queued), hoặc không đủ để trả lời chi tiết:
+       - HÃY TRẢ LỜI NGẮN GỌN: "Tôi tìm thấy tài liệu liên quan là [Tên file]. Tuy nhiên, nội dung chi tiết đang được hệ thống xử lý hoặc chưa thể đọc được. Bạn vui lòng xem trực tiếp file đính kèm bên dưới."
+       - TUYỆT ĐỐI KHÔNG tự bịa ra câu trả lời hoặc trả lời chung chung dựa trên kiến thức ngoài để tránh gây nhiễu (ví dụ: không giải thích luật chung chung nếu file nội bộ chưa đọc được).
        - BẮT BUỘC thêm dòng này vào cuối câu trả lời để hiển thị nút tải: [[File: tên_file_chính_xác]]
 
     2. NẾU nội dung trong CONTEXT rõ ràng và trả lời được câu hỏi:

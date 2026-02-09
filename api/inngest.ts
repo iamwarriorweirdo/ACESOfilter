@@ -174,9 +174,8 @@ const processFileInBackground = inngest.createFunction(
           extractedText, // Text is usually small enough
           parseMethod,
           needsAiVision,
-          // FIX: Do NOT return the huge base64 string here to avoid Inngest step size limit.
-          // The next step (ocr-recovery) will automatically re-download the file if this is null.
-          fileBase64: null 
+          // Trả về null để tránh giới hạn kích thước bước của Inngest (4MB)
+          fileBase64: null as string | null
         };
       });
 
@@ -187,7 +186,8 @@ const processFileInBackground = inngest.createFunction(
 
         if (parseResult.needsAiVision) {
           await updateDbStatus(docId, `Activating ${ocrModel} (Computer Vision)...`);
-          let base64 = parseResult.fileBase64;
+          // FIXED: Khai báo kiểu dữ liệu tường minh để tránh lỗi TS2322
+          let base64: string | null = parseResult.fileBase64;
           
           if (!base64) {
             // Re-download strategy to bypass step size limit
@@ -256,7 +256,7 @@ const processFileInBackground = inngest.createFunction(
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
           
-          // Robust update with auto-migration fallback
+          // Robust update with auto-migration fallback for 'status' column error
           try {
              await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
           } catch (err: any) {

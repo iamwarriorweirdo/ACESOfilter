@@ -392,7 +392,7 @@ const processFileInBackground = inngest.createFunction(
           parseMethod,
           needsAiVision,
           // FIX: Do NOT return large binary chunks. Rely on next step to re-download.
-          fileBase64: null 
+          fileBase64: null as string | null
         };
       });
 
@@ -403,7 +403,8 @@ const processFileInBackground = inngest.createFunction(
 
         if (parseResult.needsAiVision) {
           await updateDbStatus(docId, `Activating ${ocrModel} (Computer Vision)...`);
-          let base64 = parseResult.fileBase64;
+          // FIXED: Khai báo kiểu dữ liệu tường minh để tránh lỗi TS2322
+          let base64: string | null = parseResult.fileBase64;
           if (!base64) {
             // Re-fetch here to bypass payload limits
             const ab = await fetchFileBuffer(url);
