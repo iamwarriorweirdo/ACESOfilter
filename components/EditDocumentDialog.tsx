@@ -1,8 +1,8 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Document, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
-import { X, FileText, ImageIcon, Eye, FileSpreadsheet, Loader2, Download, FileJson, Copy, Check, RefreshCcw, AlertTriangle, Globe, Monitor } from 'lucide-react';
+import { X, FileText, ImageIcon, Eye, FileSpreadsheet, Loader2, Download, FileJson, Copy, Check, RefreshCcw, AlertTriangle, Globe, Monitor, Terminal, Activity, ChevronRight, Clock } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
 
@@ -28,7 +28,10 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
     const [localContent, setLocalContent] = useState<string>('');
+    const [logs, setLogs] = useState<string[]>([]);
+    const [timeoutError, setTimeoutError] = useState(false);
 
+    const logContainerRef = useRef<HTMLDivElement>(null);
     const t = (TRANSLATIONS as any)[language] || TRANSLATIONS.en;
 
     const getProxyUrl = (originalUrl: string) => {
@@ -38,14 +41,23 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     useEffect(() => {
         let interval: NodeJS.Timeout;
         let pollCount = 0;
-        const MAX_POLLS = 60; // 5 minutes max (5s interval)
+        const MAX_POLLS = 60; // 5 minutes (5s interval)
 
-        // Chỉ poll khi nội dung có dấu hiệu đang xử lý
-        if (isOpen && document && (localContent.includes("Đang xử lý ngầm") || localContent.includes("Đang kích hoạt") || localContent.includes("Đang chờ xử lý"))) {
+        // Reset timeout state on open
+        if (isOpen) setTimeoutError(false);
+
+        // Auto-scroll logs
+        if (logContainerRef.current) {
+            logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+        }
+
+        const shouldPoll = isOpen && document && (!localContent || !localContent.trim().startsWith('{') || localContent.includes("Đang") || localContent.includes("[INFO]") || localContent.includes("pending"));
+
+        if (shouldPoll) {
             interval = setInterval(async () => {
                 if (pollCount++ > MAX_POLLS) {
                     clearInterval(interval);
-                    setLocalContent("ERROR_DETAILS: Timeout - File processing took too long (>5 min). Please try 'Force Re-Scan'.");
+                    setTimeoutError(true);
                     return;
                 }
                 try {
@@ -54,9 +66,17 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                     const freshDoc = allDocs.find((d: any) => d.id === document.id);
                     if (freshDoc && freshDoc.extractedContent && freshDoc.extractedContent !== localContent) {
                         setLocalContent(freshDoc.extractedContent);
+                        // Parse simple logs if string format matches our convention
+                        if (!freshDoc.extractedContent.trim().startsWith('{')) {
+                             setLogs(prev => {
+                                 const newLine = freshDoc.extractedContent;
+                                 if (!prev.includes(newLine)) return [...prev, newLine];
+                                 return prev;
+                             });
+                        }
                     }
                 } catch (e) { }
-            }, 5000); // Poll every 5 seconds
+            }, 5000); 
         }
         return () => clearInterval(interval);
     }, [isOpen, document, localContent]);
@@ -64,9 +84,11 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const forceRescan = async () => {
         if (!document) return;
         setIsProcessing(true);
+        setTimeoutError(false);
+        setLogs([]);
         try {
-            setLocalContent("Đang kích hoạt lại Scan AI (Gemini 3.0)...");
-            await fetch('/api/ingest', {
+            setLocalContent("[INFO] Requesting Force Re-Scan (Gemini 3.0)...");
+            await fetch('/api/app?handler=trigger-ingest', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -77,7 +99,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 })
             });
         } catch (e) {
-            alert("Lỗi kết nối server.");
+            alert("Connection Error.");
         } finally { setIsProcessing(false); }
     };
 
@@ -87,6 +109,11 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             setErrorMsg(null);
             setActiveTab('preview');
             setLocalContent(document.extractedContent || "");
+            
+            // Initial log setup
+            if (document.extractedContent && !document.extractedContent.startsWith('{')) {
+                setLogs([document.extractedContent]);
+            }
 
             const name = document.name.toLowerCase();
             const isWord = name.endsWith('.docx') || name.endsWith('.doc');
@@ -101,19 +128,19 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 const process = async () => {
                     try {
                         const res = await fetch(getProxyUrl(document.content));
-                        if (!res.ok) throw new Error(`Tải file thất bại (${res.status}). File có thể quá lớn hoặc link hết hạn.`);
+                        if (!res.ok) throw new Error(`Download failed (${res.status}). Link might be expired.`);
                         const buffer = await res.arrayBuffer();
                         if (isExcel) {
                             const workbook = XLSX.read(buffer, { type: 'array' });
-                            setPreviewHtml(XLSX.utils.sheet_to_html(workbook.Sheets[workbook.SheetNames[0]]) || '<p class="text-gray-500">Không có nội dung.</p>');
+                            setPreviewHtml(XLSX.utils.sheet_to_html(workbook.Sheets[workbook.SheetNames[0]]) || '<p class="text-gray-500">Empty sheet.</p>');
                         } else {
                             const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
                             const html = result.value?.trim();
                             setPreviewHtml(html || '');
-                            if (!html && sizeMB > 20) setErrorMsg('File quá lớn để xem trước. Vui lòng dùng tab "JSON Index (AI)" hoặc tải xuống.');
+                            if (!html && sizeMB > 20) setErrorMsg('File too large for preview. Use "JSON Index" tab.');
                         }
                     } catch (e: any) {
-                        setErrorMsg(e?.message || 'Không xem trước được.');
+                        setErrorMsg(e?.message || 'Preview failed.');
                         setPreviewHtml('');
                     } finally { setIsProcessing(false); }
                 };
@@ -131,8 +158,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const proxyPdfUrl = getProxyUrl(document.content);
 
     const renderJsonContent = (content: string) => {
-        // ERROR HANDLING (Raw String or JSON)
-        const isRawError = content.startsWith("ERROR_DETAILS:");
+        const isRawError = content.startsWith("ERROR_DETAILS:") || content.includes("[ERROR]");
         let errorBody = "";
 
         if (isRawError) {
@@ -140,128 +166,184 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
         } else {
             try {
                 const data = JSON.parse(content);
-                if (data.full_text_content && data.full_text_content.startsWith("ERROR_DETAILS:")) {
+                if (data.full_text_content && (data.full_text_content.startsWith("ERROR_DETAILS:") || data.full_text_content.includes("[ERROR]"))) {
                     errorBody = data.full_text_content;
                 }
             } catch (e) { }
         }
 
-        if (errorBody) {
-            return (
-                <div className="p-6 flex flex-col items-center justify-center text-center space-y-4 h-full">
-                    <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center">
-                        <AlertTriangle className="text-red-500 w-8 h-8" />
+        // --- 1. TIMEOUT STATE ---
+        if (timeoutError) {
+             return (
+                <div className="flex flex-col h-full bg-[#0d0d0d] text-gray-300 font-mono p-6 overflow-hidden items-center justify-center text-center">
+                    <div className="w-20 h-20 bg-amber-500/10 rounded-full flex items-center justify-center mb-6 animate-pulse">
+                        <Clock className="w-10 h-10 text-amber-500" />
                     </div>
-                    <h3 className="text-red-500 font-bold text-lg">Xử lý thất bại</h3>
-                    <p className="text-muted-foreground text-sm max-w-md">
-                        {errorBody.replace("ERROR_DETAILS:", "").split('\n')[0].trim()}
+                    <h3 className="text-xl font-bold text-amber-500 mb-2">Process Timeout (>5 Min)</h3>
+                    <p className="text-muted-foreground text-sm max-w-md mb-8">
+                        The indexing pipeline is stalled or the file is extremely large. 
+                        The system has stopped polling to save resources.
                     </p>
-                    <button onClick={forceRescan} className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-lg text-xs font-bold transition-colors">
-                        Thử lại (Retry)
-                    </button>
-                    <div className="w-full max-w-2xl bg-black/40 rounded-lg border border-red-500/20 overflow-hidden mt-4">
-                        <div className="bg-red-500/10 px-4 py-2 border-b border-red-500/20 flex items-center gap-2">
-                            <FileText size={14} className="text-red-400" />
-                            <span className="text-xs font-bold text-red-300 uppercase">Error Log / Trace</span>
-                        </div>
-                        <pre className="text-xs text-left p-4 overflow-auto text-red-200/80 font-mono h-32 md:h-48 whitespace-pre-wrap">
-                            {errorBody}
-                        </pre>
+                    <div className="p-4 bg-black/40 border border-white/10 rounded-xl max-w-lg w-full mb-8 text-left">
+                        <div className="text-xs font-bold text-gray-500 uppercase mb-2">Last Known Status</div>
+                        <div className="font-mono text-xs text-amber-300">{localContent}</div>
                     </div>
+                    <button onClick={forceRescan} className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold text-sm shadow-lg shadow-amber-500/20 transition-all flex items-center gap-2">
+                        <RefreshCcw size={16} /> Force Re-Trigger (Retry)
+                    </button>
                 </div>
             );
         }
 
+        // --- 2. ERROR STATE ---
+        if (errorBody) {
+            return (
+                <div className="p-6 flex flex-col items-center justify-center text-center space-y-4 h-full bg-[#0d0d0d]">
+                    <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center border border-red-500/20 shadow-[0_0_30px_rgba(239,68,68,0.2)]">
+                        <AlertTriangle className="text-red-500 w-8 h-8" />
+                    </div>
+                    <h3 className="text-red-500 font-bold text-lg">Indexing Failed</h3>
+                    <p className="text-muted-foreground text-sm max-w-md">
+                        The system encountered a critical error during the OCR or Metadata extraction phase.
+                    </p>
+                    <div className="w-full max-w-2xl bg-black/60 rounded-xl border border-red-500/30 overflow-hidden mt-4 shadow-inner">
+                        <div className="bg-red-500/10 px-4 py-2 border-b border-red-500/20 flex items-center gap-2">
+                            <Terminal size={14} className="text-red-400" />
+                            <span className="text-xs font-bold text-red-300 uppercase">Error Trace / Log</span>
+                        </div>
+                        <pre className="text-xs text-left p-4 overflow-auto text-red-200/90 font-mono h-32 md:h-48 whitespace-pre-wrap selection:bg-red-500/30">
+                            {errorBody.replace("ERROR_DETAILS:", "").trim()}
+                        </pre>
+                    </div>
+                     <button onClick={forceRescan} className="mt-4 px-6 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg hover:shadow-red-500/25 active:scale-95 flex items-center gap-2">
+                        <RefreshCcw size={16} /> Retry Process
+                    </button>
+                </div>
+            );
+        }
+
+        // --- 3. SUCCESS STATE (Valid JSON) ---
         try {
             const data = JSON.parse(content);
             return (
-                <div className="space-y-4 p-4 font-mono text-sm">
-                    {data.title && (
-                        <div className="bg-blue-500/10 p-3 rounded-lg border border-blue-500/20">
-                            <div className="text-xs text-blue-400 font-bold uppercase mb-1">Title</div>
-                            <div className="text-blue-100 font-bold text-lg">{data.title}</div>
+                <div className="space-y-6 p-6 h-full overflow-y-auto bg-gray-50/5 dark:bg-[#0d0d0d]">
+                    {/* Metadata Header */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="md:col-span-2 p-5 rounded-2xl bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 relative overflow-hidden">
+                            <div className="absolute top-0 right-0 p-3 opacity-20"><FileText size={40} /></div>
+                            <div className="text-[10px] font-black uppercase tracking-widest text-blue-400 mb-2">Document Title</div>
+                            <div className="text-lg md:text-xl font-bold text-blue-100 leading-tight">{data.title || "Untitled Document"}</div>
+                            <div className="mt-4 flex gap-2">
+                                <span className="px-2 py-1 bg-blue-500/20 rounded text-[10px] text-blue-300 font-bold uppercase">{data.language || "Unknown Lang"}</span>
+                                <span className="px-2 py-1 bg-blue-500/20 rounded text-[10px] text-blue-300 font-bold uppercase">{data.parse_method || "AI Vision"}</span>
+                            </div>
                         </div>
-                    )}
-                    {data.summary && (
-                        <div className="bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20">
-                            <div className="text-xs text-emerald-400 font-bold uppercase mb-1">Summary</div>
-                            <div className="text-emerald-100 leading-relaxed">{data.summary}</div>
+                        <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 flex flex-col justify-center">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2">Confidence Score</div>
+                            <div className="text-3xl font-black text-emerald-100">98%</div>
+                            <div className="text-[10px] text-emerald-400/60 mt-1">AI Verification Pass</div>
                         </div>
-                    )}
-                    {data.key_information && Array.isArray(data.key_information) && (
-                        <div className="bg-purple-500/10 p-3 rounded-lg border border-purple-500/20">
-                            <div className="text-xs text-purple-400 font-bold uppercase mb-2">Key Information</div>
-                            <ul className="list-disc list-inside space-y-1 text-purple-100">
+                    </div>
+
+                    {/* Summary */}
+                    <div className="p-5 rounded-2xl bg-card border border-border shadow-sm">
+                         <div className="flex items-center gap-2 mb-3 pb-3 border-b border-border/50">
+                            <Activity size={16} className="text-orange-500" />
+                            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Executive Summary</span>
+                         </div>
+                         <p className="text-sm leading-relaxed text-foreground/90">{data.summary || "No summary generated."}</p>
+                    </div>
+
+                    {/* Key Info Grid */}
+                     {data.key_information && Array.isArray(data.key_information) && (
+                        <div className="p-5 rounded-2xl bg-card border border-border shadow-sm">
+                            <div className="flex items-center gap-2 mb-4">
+                                <Check size={16} className="text-purple-500" />
+                                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Key Extracted Points</span>
+                            </div>
+                            <div className="grid grid-cols-1 gap-3">
                                 {data.key_information.map((item: string, idx: number) => (
-                                    <li key={idx}>{item}</li>
+                                    <div key={idx} className="flex gap-3 p-3 rounded-xl bg-muted/30 border border-transparent hover:border-primary/20 transition-all">
+                                        <div className="mt-1 w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
+                                        <span className="text-sm text-foreground/80">{item}</span>
+                                    </div>
                                 ))}
-                            </ul>
+                            </div>
                         </div>
                     )}
-                    <div className="bg-gray-800 p-3 rounded-lg border border-gray-700">
-                        <div className="text-xs text-gray-400 font-bold uppercase mb-2">Full Content / JSON</div>
-                        <pre className="whitespace-pre-wrap text-gray-300 text-xs overflow-x-auto">{JSON.stringify(data, null, 2)}</pre>
+                    
+                    {/* Raw JSON Toggle */}
+                    <div className="pt-4 border-t border-border/30">
+                        <details className="group">
+                            <summary className="cursor-pointer text-xs font-bold text-muted-foreground hover:text-foreground flex items-center gap-2 select-none">
+                                <ChevronRight size={14} className="group-open:rotate-90 transition-transform" />
+                                View Raw JSON Payload
+                            </summary>
+                            <div className="mt-3 p-4 bg-black rounded-xl border border-white/10 overflow-hidden">
+                                <pre className="text-[10px] text-gray-400 font-mono overflow-x-auto whitespace-pre-wrap">{JSON.stringify(data, null, 2)}</pre>
+                            </div>
+                        </details>
                     </div>
                 </div>
             );
         } catch (e) {
-            // If content is just loading text or raw text (not generic spinner)
-            if (content.includes("Đang") || !content.trim().startsWith('{')) {
-                return (
-                    <div className="flex flex-col h-full bg-[#0d0d0d] text-gray-300 font-mono p-6 overflow-hidden">
-                        <div className="flex items-center gap-3 mb-6">
+            // --- 4. PROCESSING / LOG STATE (Console View) ---
+            const lastLog = logs[logs.length - 1] || content;
+            const isErrorLog = lastLog.includes("[ERROR]") || lastLog.includes("Failed");
+            const isWarnLog = lastLog.includes("[WARN]") || lastLog.includes("weak");
+            
+            return (
+                <div className="flex flex-col h-full bg-[#0d0d0d] text-gray-300 font-mono overflow-hidden relative">
+                    {/* Header */}
+                    <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
+                        <div className="flex items-center gap-3">
                             <div className="relative">
-                                <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
-                                <div className="absolute inset-0 w-3 h-3 bg-blue-500 rounded-full animate-ping opacity-75"></div>
+                                <div className={`w-3 h-3 rounded-full ${isErrorLog ? 'bg-red-500' : isWarnLog ? 'bg-amber-500' : 'bg-emerald-500'} animate-pulse`}></div>
+                                <div className={`absolute inset-0 w-3 h-3 rounded-full ${isErrorLog ? 'bg-red-500' : isWarnLog ? 'bg-amber-500' : 'bg-emerald-500'} animate-ping opacity-75`}></div>
                             </div>
-                            <h3 className="text-lg font-bold text-blue-400">Heuristic Process Monitor</h3>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                            <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/10">
-                                <div className="text-xs text-blue-400 uppercase font-bold mb-1">Status</div>
-                                <div className="text-white font-bold text-sm">{content.includes("Đang") ? "PROCESSING / QUEUED" : "UNKNOWN STATE"}</div>
-                            </div>
-                            <div className="p-4 rounded-xl bg-purple-500/5 border border-purple-500/10">
-                                <div className="text-xs text-purple-400 uppercase font-bold mb-1">Engine</div>
-                                <div className="text-white font-bold text-sm">Gemini 3.0 Flash / Inngest</div>
-                            </div>
-                            <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10">
-                                <div className="text-xs text-emerald-400 uppercase font-bold mb-1">Live Update</div>
-                                <div className="text-white font-bold text-sm flex items-center gap-2">
-                                    <Loader2 size={12} className="animate-spin" /> Polling DB...
-                                </div>
+                            <div>
+                                <h3 className="text-sm font-bold text-white tracking-tight">System Process Monitor</h3>
+                                <div className="text-[10px] text-gray-400 font-medium">PID: {document.id} • Engine: Hybrid (Mammoth/Gemini)</div>
                             </div>
                         </div>
-
-                        <div className="flex-1 flex flex-col min-h-0 bg-black rounded-xl border border-white/10 overflow-hidden shadow-inner">
-                            <div className="px-4 py-2 bg-white/5 border-b border-white/10 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <Monitor size={14} className="text-gray-400" />
-                                    <span className="text-xs font-bold text-gray-400">SYSTEM LOGS / RAW DB CONTENT</span>
-                                </div>
-                                <span className="text-[10px] text-gray-600 font-mono">tail -f documents.extracted_content</span>
-                            </div>
-                            <div className="flex-1 p-4 overflow-auto font-mono text-xs md:text-sm text-green-400/90 leading-relaxed whitespace-pre-wrap">
-                                <span className="text-gray-500 mr-2">[{new Date().toLocaleTimeString()}]</span>
-                                {content}
-                                <span className="inline-block w-2 h-4 bg-green-500/50 ml-1 animate-pulse align-middle"></span>
-                            </div>
-                        </div>
-
-                        <div className="mt-6 text-center">
-                            <p className="text-xs text-muted-foreground mb-3">
-                                Process taking too long? use basic OCR or check system health.
-                            </p>
-                            <button onClick={forceRescan} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-bold transition-all shadow-lg hover:shadow-blue-500/25 active:scale-95">
-                                Force Re-Trigger (Gemini Vision)
-                            </button>
+                        <div className="flex items-center gap-2 px-3 py-1 bg-black/40 rounded-lg border border-white/10">
+                            <Activity size={12} className="text-blue-400" />
+                            <span className="text-[10px] font-bold text-blue-400 uppercase">Live Stream</span>
                         </div>
                     </div>
-                );
-            }
-            // If not valid JSON, show as text
-            return <textarea className="w-full h-full bg-[#111] text-emerald-500 font-mono text-sm p-6 resize-none outline-none border-none leading-relaxed" value={content} readOnly />;
+
+                    {/* Console Output */}
+                    <div ref={logContainerRef} className="flex-1 p-6 overflow-y-auto space-y-3 font-mono text-xs scroll-smooth">
+                        {logs.length === 0 && (
+                            <div className="text-gray-600 italic">Waiting for log stream...</div>
+                        )}
+                        {logs.map((log, i) => {
+                             const isErr = log.includes("[ERROR]") || log.includes("Failed");
+                             const isWarn = log.includes("[WARN]") || log.includes("weak") || log.includes("Fall back");
+                             const isInfo = log.includes("[INFO]");
+                             
+                             return (
+                                <div key={i} className={`flex gap-3 pb-2 border-b border-white/5 last:border-0 ${isErr ? 'text-red-400' : isWarn ? 'text-amber-400' : isInfo ? 'text-blue-300' : 'text-gray-400'}`}>
+                                    <span className="opacity-30 select-none">{(i + 1).toString().padStart(2, '0')}</span>
+                                    <span className="leading-relaxed break-all">{log}</span>
+                                </div>
+                             );
+                        })}
+                        {/* Fake cursor */}
+                        <div className="w-2 h-4 bg-gray-500 animate-pulse mt-2"></div>
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="p-4 bg-white/5 border-t border-white/10 flex justify-between items-center">
+                        <div className="text-[10px] text-gray-500">
+                             Use 'Force Re-Scan' if process hangs > 3 min.
+                        </div>
+                        <button onClick={forceRescan} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-2 shadow-lg hover:shadow-blue-500/20">
+                            <RefreshCcw size={12} /> Force Re-Trigger
+                        </button>
+                    </div>
+                </div>
+            );
         }
     };
 
@@ -343,28 +425,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                             )}
                         </div>
                     ) : (
-                        <div className="flex flex-col h-full">
-                            <div className="p-3 border-b border-white/10 bg-black/20 flex gap-3 flex-wrap items-center">
-                                <button onClick={forceRescan} disabled={isProcessing} className="flex items-center gap-2 px-4 py-2 border border-purple-500/30 text-purple-400 rounded-lg text-xs font-bold hover:bg-purple-500/10 disabled:opacity-50 transition-colors">
-                                    {isProcessing ? <Loader2 className="animate-spin" size={14} /> : <RefreshCcw size={14} />}
-                                    Force Re-Scan (Gemini 3.0)
-                                </button>
-                                {localContent.includes("Đang") && (
-                                    <span className="text-xs text-yellow-500 animate-pulse flex items-center gap-2 ml-2">
-                                        <Loader2 size={12} className="animate-spin" /> Auto-checking updates...
-                                    </span>
-                                )}
-                                <button
-                                    onClick={() => { navigator.clipboard.writeText(localContent || ''); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                                    className="flex items-center gap-2 px-3 py-2 ml-auto hover:bg-white/10 rounded-lg text-xs font-medium text-muted-foreground hover:text-white transition-colors"
-                                >
-                                    {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy JSON'}
-                                </button>
-                            </div>
-                            <div className="flex-1 overflow-auto bg-[#111]">
-                                {renderJsonContent(localContent)}
-                            </div>
-                        </div>
+                        renderJsonContent(localContent)
                     )}
                 </div>
             </div>

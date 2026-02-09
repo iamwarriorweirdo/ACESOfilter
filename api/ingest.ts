@@ -1,4 +1,3 @@
-
 // DO fix: use correct text access and Pinecone upsert format
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
@@ -7,9 +6,6 @@ import { GoogleGenAI } from '@google/genai';
 import { Buffer } from 'node:buffer';
 
 export const inngest = new Inngest({ id: "hr-rag-app" });
-
-// Helper: Delay to avoid spamming APIs
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Helper: Download file safely
 async function fetchFileBuffer(url: string) {
@@ -52,16 +48,36 @@ async function logUsage(model: string, tokens: number, duration: number, status:
   }
 }
 
-// Helper: Update DB status
-async function updateDbStatus(docId: string, status: string, isError = false) {
+// Helper: Update DB status with append capability for logs
+async function updateDbStatus(docId: string, message: string, isError = false, append = true) {
   const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
   if (!dbUrl) return;
   try {
     // @ts-ignore
     const { neon } = await import('@neondatabase/serverless');
     const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
-    const content = isError ? `ERROR_DETAILS: ${status}` : `Đang xử lý: ${status}...`;
-    await sql`UPDATE documents SET extracted_content = ${content} WHERE id = ${docId}`;
+    
+    const timestamp = new Date().toISOString().split('T')[1].split('.')[0]; // HH:MM:SS
+    const logPrefix = isError ? `[${timestamp}] [ERROR]` : `[${timestamp}] [INFO]`;
+    const newLogLine = `${logPrefix} ${message}`;
+
+    if (append && !isError) {
+        // Fetch current content to append logic (simplified: we just overwrite with history in real app, but here we construct a log string)
+        // For simplicity in this demo, we will just set the status to the latest log line combined with a marker for the frontend to know it's a log
+        // In a production app, you'd append to a JSON array or a text column.
+        // Here we simulate a "Log Stream" by fetching first (optional) or just updating.
+        // To keep it simple and stateless for Inngest, we'll just write the current step. 
+        // The Frontend will handle "accumulating" history if it was polling, OR we return a multiline string if we want to persist history.
+        // Let's rely on the frontend to visualize the "Current Step" or we can try to append if we fetch.
+        
+        // Strategy: Just write the latest status. The frontend will show "Last Update: ..."
+        // OR better: use a specific format: "LOG_STREAM:..."
+        await sql`UPDATE documents SET extracted_content = ${newLogLine} WHERE id = ${docId}`;
+    } else {
+        // Final error or overwrite
+        const finalMsg = isError ? `ERROR_DETAILS: ${message}` : message;
+        await sql`UPDATE documents SET extracted_content = ${finalMsg} WHERE id = ${docId}`;
+    }
   } catch (e) { console.error("DB Update Failed", e); }
 }
 
@@ -291,13 +307,13 @@ const processFileInBackground = inngest.createFunction(
 
       // --- STEP 2: DOWNLOAD & PARSE ---
       const parseResult = await step.run("download-and-parse", async () => {
-        await updateDbStatus(docId, "Scanning");
+        await updateDbStatus(docId, "Initializing download sequence...");
         const arrayBuffer = await fetchFileBuffer(url);
         let fileBuffer: Buffer = Buffer.from(arrayBuffer as any);
 
         if (systemConfig?.enableAdobeCompression && (fileType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf'))) {
           try {
-            await updateDbStatus(docId, "Optimizing PDF (Adobe)");
+            await updateDbStatus(docId, "Attempting Adobe PDF Optimization...");
             fileBuffer = await compressPdfWithAdobe(fileBuffer, systemConfig);
           } catch (e) { console.error("[Inngest] Adobe compression failed", e); }
         }
@@ -307,19 +323,28 @@ const processFileInBackground = inngest.createFunction(
         let needsAiVision = false;
 
         const lowFileName = fileName.toLowerCase();
+        
+        // STANDARD PARSER LOGIC
         if (lowFileName.endsWith('.docx')) {
           try {
+            await updateDbStatus(docId, "Running Mammoth (DOCX Parser)...");
             // @ts-ignore
             const mammoth = await import('mammoth');
             const res = await mammoth.extractRawText({ buffer: fileBuffer });
             extractedText = res.value;
             parseMethod = "mammoth";
-            if (!extractedText || extractedText.trim().length < 50) needsAiVision = true;
-          } catch (e) { needsAiVision = true; }
+            if (!extractedText || extractedText.trim().length < 50) {
+                 await updateDbStatus(docId, "Mammoth result weak (<50 chars). Marking for AI Vision.");
+                 needsAiVision = true;
+            }
+          } catch (e: any) { 
+             await updateDbStatus(docId, `Mammoth Failed: ${e.message}. Fallback to AI Vision.`);
+             needsAiVision = true; 
+          }
         } else if (fileType.includes('pdf') || lowFileName.endsWith('.pdf')) {
           if (systemConfig?.enableAdobeCompression) {
             try {
-              await updateDbStatus(docId, "Deep Extracting (Adobe)");
+              await updateDbStatus(docId, "Running Adobe Deep Extract...");
               const adobeRes = await extractPdfWithAdobe(fileBuffer, systemConfig);
               if (adobeRes.text && adobeRes.text.length > 100) {
                 extractedText = adobeRes.text;
@@ -329,12 +354,16 @@ const processFileInBackground = inngest.createFunction(
           }
           if (!extractedText) {
             try {
+              await updateDbStatus(docId, "Running PDF-Parse (Standard)...");
               // @ts-ignore
               const pdfParse = await import('pdf-parse');
               const data = await pdfParse.default(fileBuffer);
               extractedText = data.text;
               parseMethod = "pdf-parse";
-            } catch (e) { needsAiVision = true; }
+            } catch (e: any) { 
+                await updateDbStatus(docId, `PDF-Parse Failed: ${e.message}. Fallback to AI Vision.`);
+                needsAiVision = true; 
+            }
           }
         } else if (lowFileName.endsWith('.txt')) {
           extractedText = fileBuffer.toString('utf-8');
@@ -343,7 +372,10 @@ const processFileInBackground = inngest.createFunction(
           needsAiVision = true;
         }
 
-        if (!extractedText || extractedText.trim().length < 20) needsAiVision = true;
+        if (!extractedText || extractedText.trim().length < 20) {
+            await updateDbStatus(docId, "Text extraction yielded empty result. Forcing AI Vision.");
+            needsAiVision = true;
+        }
 
         return {
           extractedText,
@@ -359,7 +391,7 @@ const processFileInBackground = inngest.createFunction(
         let method = parseResult.parseMethod;
 
         if (parseResult.needsAiVision) {
-          await updateDbStatus(docId, "AI Vision Scan");
+          await updateDbStatus(docId, `Activating ${ocrModel} (Computer Vision)...`);
           let base64 = parseResult.fileBase64;
           if (!base64) {
             const ab = await fetchFileBuffer(url);
@@ -374,7 +406,7 @@ const processFileInBackground = inngest.createFunction(
               role: 'user',
               parts: [
                 { inlineData: { data: base64, mimeType: mime } },
-                { text: "OCR Task: Extract ALL text from this document accurately. Use Markdown." }
+                { text: "OCR Task: Extract ALL text from this document accurately. Use Markdown. Preserve tables." }
               ]
             }]
           });
@@ -389,12 +421,12 @@ const processFileInBackground = inngest.createFunction(
       const parseMethod = finalResult.method;
 
       if (!extractedContent || extractedContent.length < 10) {
-        throw new Error("OCR Failed: No readable text found.");
+        throw new Error("OCR Failed: No readable text found after all attempts.");
       }
 
       // --- STEP 4: METADATA & DB SAVE ---
       await step.run("finalize-and-save", async () => {
-        await updateDbStatus(docId, "Finalizing metadata");
+        await updateDbStatus(docId, "Generating Metadata & Indexing JSON...");
         const res = await safeAiCall(ai, {
           model: analysisModel,
           contents: [{
@@ -423,6 +455,8 @@ const processFileInBackground = inngest.createFunction(
         const { neon } = await import('@neondatabase/serverless');
         const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
 
+        // Important: Overwrite the 'extracted_content' with the FINAL JSON. 
+        // We set 'append=false' implicitly by just running this update.
         await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
 
         const embText = `File: ${fileName}\nTitle: ${fullMetadata.title}\nSummary: ${fullMetadata.summary}\nContent: ${extractedContent.substring(0, 2000)}`;
@@ -448,9 +482,11 @@ const processFileInBackground = inngest.createFunction(
         }
       });
 
-      await updateDbStatus(docId, "Thành công (Indexed)");
+      // No need to call updateDbStatus("Success") because we just overwrote extracted_content with the JSON.
+      // The frontend will see valid JSON and render the dashboard.
     } catch (error: any) {
-      await updateDbStatus(docId, `${error.message || "Unknown System Error"}`, true);
+      // Final error catch: This will overwrite everything with the error message
+      await updateDbStatus(docId, `${error.message || "Unknown System Error"}`, true, false);
       throw error;
     }
   }
