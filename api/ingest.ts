@@ -388,10 +388,9 @@ const processFileInBackground = inngest.createFunction(
         }
 
         return {
-          extractedText, // Pass text (usually fine)
+          extractedText,
           parseMethod,
           needsAiVision,
-          // FIX: Do NOT return large binary chunks. Rely on next step to re-download.
           fileBase64: null as string | null
         };
       });
@@ -402,16 +401,19 @@ const processFileInBackground = inngest.createFunction(
         let method = parseResult.parseMethod;
 
         if (parseResult.needsAiVision) {
-          await updateDbStatus(docId, `Activating ${ocrModel} (Computer Vision)...`);
-          // FIXED: Khai báo kiểu dữ liệu tường minh để tránh lỗi TS2322
-          let base64: string | null = parseResult.fileBase64;
+          // FIXED: Type casting
+          let base64 = (parseResult.fileBase64 as string | null);
           if (!base64) {
-            // Re-fetch here to bypass payload limits
             const ab = await fetchFileBuffer(url);
             base64 = Buffer.from(ab).toString('base64');
           }
-          const mime = (fileType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf')) ? 'application/pdf' :
-            (fileName.toLowerCase().endsWith('.docx') ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'image/png');
+
+          const lowFileName = fileName.toLowerCase();
+          const mime = (fileType.includes('pdf') || lowFileName.endsWith('.pdf')) ? 'application/pdf' : 'image/png';
+
+          if (lowFileName.endsWith('.docx') && (!text || text.length < 10)) {
+              throw new Error("Không thể OCR file Word rỗng. Vui lòng chuyển sang PDF.");
+          }
 
           const visionRes = await safeAiCall(ai, {
             model: ocrModel,
@@ -423,7 +425,6 @@ const processFileInBackground = inngest.createFunction(
               ]
             }]
           });
-          // DO fix: access text as property
           text = visionRes.text || "";
           method = `vision-${ocrModel}`;
         }
@@ -454,7 +455,6 @@ const processFileInBackground = inngest.createFunction(
           }],
           config: { responseMimeType: 'application/json' }
         });
-        // DO fix: access text as property
         const meta = JSON.parse(res.text || "{}");
         const fullMetadata = {
           ...meta,
@@ -468,14 +468,10 @@ const processFileInBackground = inngest.createFunction(
         const { neon } = await import('@neondatabase/serverless');
         const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
 
-        // Important: Overwrite the 'extracted_content' with the FINAL JSON. 
-        // We set 'append=false' implicitly by just running this update.
-        // Robust update with auto-migration fallback
         try {
             await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
         } catch (err: any) {
             if (err.message?.includes('column "status"')) {
-                console.warn("[Auto-Migration] 'status' column missing. Adding it now...");
                 await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`;
                 await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
             } else {
@@ -490,14 +486,11 @@ const processFileInBackground = inngest.createFunction(
           outputDimensionality: 768
         } as any, 'embed');
 
-        // DO fix: access embeddings properly
-        // FIX: Access 'embeddings' instead of 'embedding'
         const vector = embRes.embeddings?.[0]?.values || [];
 
         if (vector.length === 768 && process.env.PINECONE_API_KEY) {
           const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
           const index = pc.index(process.env.PINECONE_INDEX_NAME!);
-          // DO fix: Pinecone upsert format - Pass array directly
           await index.upsert([{
               id: docId,
               values: vector,
@@ -505,11 +498,7 @@ const processFileInBackground = inngest.createFunction(
             }] as any);
         }
       });
-
-      // No need to call updateDbStatus("Success") because we just overwrote extracted_content with the JSON.
-      // The frontend will see valid JSON and render the dashboard.
     } catch (error: any) {
-      // Final error catch: This will overwrite everything with the error message
       await updateDbStatus(docId, `${error.message || "Unknown System Error"}`, true, false);
       throw error;
     }

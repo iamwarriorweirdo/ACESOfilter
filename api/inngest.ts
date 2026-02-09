@@ -171,10 +171,9 @@ const processFileInBackground = inngest.createFunction(
         }
 
         return {
-          extractedText, // Text is usually small enough
+          extractedText,
           parseMethod,
           needsAiVision,
-          // Trả về null để tránh giới hạn kích thước bước của Inngest (4MB)
           fileBase64: null as string | null
         };
       });
@@ -185,37 +184,49 @@ const processFileInBackground = inngest.createFunction(
         let method = parseResult.parseMethod;
 
         if (parseResult.needsAiVision) {
+          // FIXED: Use type casting to avoid TS2322
+          let base64 = (parseResult.fileBase64 as string | null);
+          const lowFileName = fileName.toLowerCase();
+          
+          // Gemini Vision does NOT support .docx files directly. 
+          // If it's a docx and we need Vision, it means the Mammoth text extraction was empty.
+          if (lowFileName.endsWith('.docx')) {
+             if (text && text.length > 20) return { text, method };
+             throw new Error("Tài liệu Word này không có nội dung văn bản và Gemini không hỗ trợ quét OCR trực tiếp cho định dạng .docx. Hãy chuyển sang PDF.");
+          }
+
           await updateDbStatus(docId, `Activating ${ocrModel} (Computer Vision)...`);
-          // FIXED: Khai báo kiểu dữ liệu tường minh để tránh lỗi TS2322
-          let base64: string | null = parseResult.fileBase64;
           
           if (!base64) {
-            // Re-download strategy to bypass step size limit
             const ab = await fetchFileBuffer(url);
             base64 = Buffer.from(ab).toString('base64');
           }
 
           let mime = 'image/png';
-          if (fileName.toLowerCase().endsWith('.pdf')) mime = 'application/pdf';
-          else if (fileName.toLowerCase().endsWith('.jpg') || fileName.toLowerCase().endsWith('.jpeg')) mime = 'image/jpeg';
-          else if (fileName.toLowerCase().endsWith('.webp')) mime = 'image/webp';
+          if (lowFileName.endsWith('.pdf')) mime = 'application/pdf';
+          else if (lowFileName.endsWith('.jpg') || lowFileName.endsWith('.jpeg')) mime = 'image/jpeg';
+          else if (lowFileName.endsWith('.webp')) mime = 'image/webp';
           
-          if (fileName.toLowerCase().endsWith('.docx')) {
-             if (!text) throw new Error("DOCX Parsing failed and Gemini does not support DOCX inline OCR.");
+          try {
+            const visionRes = await safeAiCall(ai, {
+                model: ocrModel,
+                contents: [{
+                  role: 'user',
+                  parts: [
+                    { inlineData: { data: base64, mimeType: mime } },
+                    { text: "OCR Task: Extract ALL text from this document accurately. Use Markdown. Preserve tables." }
+                  ]
+                }]
+              });
+              text = visionRes.text || "";
+              method = `vision-${ocrModel}`;
+          } catch (visionErr: any) {
+             console.error("[Vision Error]", visionErr);
+             if (visionErr.status === 400) {
+                 throw new Error(`Lỗi định dạng (400): Model ${ocrModel} không thể xử lý file này dưới dạng hình ảnh. Hãy đảm bảo file không bị hỏng.`);
+             }
+             throw visionErr;
           }
-
-          const visionRes = await safeAiCall(ai, {
-            model: ocrModel,
-            contents: [{
-              role: 'user',
-              parts: [
-                { inlineData: { data: base64, mimeType: mime } },
-                { text: "OCR Task: Extract ALL text from this document accurately. Use Markdown. Preserve tables." }
-              ]
-            }]
-          });
-          text = visionRes.text || "";
-          method = `vision-${ocrModel}`;
         }
         return { text, method };
       });
@@ -256,12 +267,10 @@ const processFileInBackground = inngest.createFunction(
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
           
-          // Robust update with auto-migration fallback for 'status' column error
           try {
              await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
           } catch (err: any) {
              if (err.message?.includes('column "status"')) {
-                 console.warn("[Auto-Migration] 'status' column missing. Adding it now...");
                  await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`;
                  await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
              } else {
