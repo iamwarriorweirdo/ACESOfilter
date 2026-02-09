@@ -34,11 +34,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const docId = nanoid(); // Tạo một ID duy nhất cho tài liệu
 
   return new Promise(async (resolve) => {
+    let sql: any;
+
     try {
         // Lưu thông tin file vào database trước
         const dbUrl = process.env.DATABASE_URL || '';
         if (!dbUrl) throw new Error("DATABASE_URL is not set.");
-        const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
+        sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
         
         await sql`
             INSERT INTO documents (id, name, type, url, status, extracted_content, created_at, updated_at)
@@ -59,12 +61,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           async (error, result) => {
             if (error) {
               console.error("Cloudinary Upload Error:", error);
-              await sql`UPDATE documents SET status = 'failed', extracted_content = ${`Upload failed: ${error.message}`} WHERE id = ${docId}`;
+              if (sql) {
+                await sql`UPDATE documents SET status = 'failed', extracted_content = ${`Upload failed: ${error.message}`} WHERE id = ${docId}`;
+              }
               res.status(500).json({ error: error.message });
             } else if (result) {
               console.log("Cloudinary Upload Success:", result.secure_url);
               // Cập nhật URL và trạng thái trong DB
-              await sql`UPDATE documents SET url = ${result.secure_url}, status = 'uploaded' WHERE id = ${docId}`;
+              if (sql) {
+                await sql`UPDATE documents SET url = ${result.secure_url}, status = 'uploaded' WHERE id = ${docId}`;
+              }
 
               // Gửi sự kiện Inngest để xử lý file ở background
               await inngest.send({
@@ -87,7 +93,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.error("Upload Handler Error:", error);
         // Nếu có lỗi trước khi stream, cập nhật trạng thái lỗi vào DB
         try {
-            await sql`UPDATE documents SET status = 'failed', extracted_content = ${`Initial error: ${error.message}`} WHERE id = ${docId}`;
+            if (sql) {
+                await sql`UPDATE documents SET status = 'failed', extracted_content = ${`Initial error: ${error.message}`} WHERE id = ${docId}`;
+            }
         } catch (dbErr) { console.error("Failed to update DB on error:", dbErr); }
         res.status(500).json({ error: error.message || "Internal server error" });
         resolve(true);

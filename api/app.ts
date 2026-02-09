@@ -15,6 +15,24 @@ async function getSql() {
     return neon(connectionString);
 }
 
+// Resolve env var by exact name or by suffix/contains (Vercel/Supabase integration có thể thêm prefix)
+function getSupabaseEnv(suffix: string, isUrl = false): string | undefined {
+    const exact = process.env[suffix]?.trim();
+    if (exact) return exact;
+    const upper = suffix.toUpperCase();
+    for (const [k, v] of Object.entries(process.env)) {
+        if (!v || typeof v !== 'string') continue;
+        const val = v.trim();
+        if (!val) continue;
+        const ku = k.toUpperCase();
+        if (ku === upper || ku.endsWith('_' + upper) || ku.includes(upper)) {
+            if (isUrl && !val.startsWith('http')) continue;
+            return val;
+        }
+    }
+    return undefined;
+}
+
 async function handleUsers(req: VercelRequest, res: VercelResponse) {
     if (req.method?.toUpperCase() !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
     let body = req.body || {};
@@ -137,17 +155,12 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                 const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
 
                 if (cloudName && apiKey && apiSecret) {
-                    // Extract public_id from Cloudinary URL
-                    // URL format: https://res.cloudinary.com/{cloud_name}/{resource_type}/upload/{version}/{public_id}.{format}
                     const urlParts = fileUrl.split('/');
                     const uploadIndex = urlParts.findIndex(p => p === 'upload');
                     if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
                         const publicIdWithExt = urlParts.slice(uploadIndex + 2).join('/');
-
-                        // FIX: Better Regex to capture ID even with versioning or subfolders
-                        // Tách extension ra
                         const parts = publicIdWithExt.split('.');
-                        if (parts.length > 1) parts.pop(); // Remove extension
+                        if (parts.length > 1) parts.pop(); 
                         const publicId = parts.join('.');
 
                         console.log(`[DELETE] Deleting from Cloudinary: ${publicId}`);
@@ -156,7 +169,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                 }
             } catch (e: any) {
                 console.error(`[DELETE] Cloudinary deletion failed:`, e.message);
-                // Continue with deletion even if Cloudinary fails
             }
         }
 
@@ -168,9 +180,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
 
                 if (supabaseUrl && supabaseKey) {
                     const supabase = createClient(supabaseUrl, supabaseKey);
-
-                    // Extract file path from Supabase URL
-                    // URL format: https://{project}.supabase.co/storage/v1/object/public/documents/{filename}
                     const urlParts = fileUrl.split('/documents/');
                     if (urlParts.length === 2) {
                         const filePath = urlParts[1];
@@ -180,11 +189,10 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                 }
             } catch (e: any) {
                 console.error(`[DELETE] Supabase deletion failed:`, e.message);
-                // Continue with deletion even if Supabase fails
             }
         }
 
-        // 4. Delete from Pinecone (vector embeddings)
+        // 4. Delete from Pinecone
         try {
             const pineconeApiKey = process.env.PINECONE_API_KEY;
             const pineconeIndexName = process.env.PINECONE_INDEX_NAME;
@@ -193,13 +201,11 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                 const { Pinecone } = await import('@pinecone-database/pinecone');
                 const pc = new Pinecone({ apiKey: pineconeApiKey });
                 const index = pc.index(pineconeIndexName);
-
                 console.log(`[DELETE] Deleting from Pinecone: ${docId}`);
                 await index.deleteOne(docId);
             }
         } catch (e: any) {
             console.error(`[DELETE] Pinecone deletion failed:`, e.message);
-            // Continue with deletion even if Pinecone fails
         }
 
         // 5. Delete metadata from Neon Database
@@ -209,24 +215,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ success: true, message: `File deleted from all storage systems` });
     }
     return res.status(405).end();
-}
-
-// Resolve env var by exact name or by suffix/contains (Vercel/Supabase integration có thể thêm prefix, e.g. SUPABASE_POSTGRES_URL_SUPABASE_URL)
-function getSupabaseEnv(suffix: string, isUrl = false): string | undefined {
-    const exact = process.env[suffix]?.trim();
-    if (exact) return exact;
-    const upper = suffix.toUpperCase();
-    for (const [k, v] of Object.entries(process.env)) {
-        if (!v || typeof v !== 'string') continue;
-        const val = v.trim();
-        if (!val) continue;
-        const ku = k.toUpperCase();
-        if (ku === upper || ku.endsWith('_' + upper) || ku.includes(upper)) {
-            if (isUrl && !val.startsWith('http')) continue;
-            return val;
-        }
-    }
-    return undefined;
 }
 
 async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
@@ -241,8 +229,8 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
             || process.env.SUPABASE_SERVICE_KEY?.trim();
 
         if (!supabaseUrl || !supabaseKey) {
-            console.error("Missing Supabase env vars. Checked: SUPABASE_URL, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (and prefixed variants)");
-            return res.status(500).json({ error: 'Server thiếu cấu hình Supabase. Vui lòng kiểm tra Environment Variables.' });
+            console.error("Missing Supabase env vars.");
+            return res.status(500).json({ error: 'Server thiếu cấu hình Supabase.' });
         }
 
         const supabase = createClient(supabaseUrl, supabaseKey);
@@ -254,33 +242,20 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
 
         // Ensure bucket exists
         try {
-            const { data: buckets, error: bucketError } = await supabase.storage.listBuckets();
-            if (bucketError) {
-                console.error("Supabase List Buckets Error:", bucketError);
-            } else {
-                const bucketExists = buckets?.find(b => b.name === 'documents');
-                if (!bucketExists) {
-                    await supabase.storage.createBucket('documents', { public: true });
-                }
+            const { data: buckets } = await supabase.storage.listBuckets();
+            const bucketExists = buckets?.find(b => b.name === 'documents');
+            if (!bucketExists) {
+                await supabase.storage.createBucket('documents', { public: true });
             }
-        } catch (e) {
-            console.warn("Bucket check failed, attempting upload anyway...", e);
-        }
+        } catch (e) { console.warn("Bucket check failed", e); }
 
         const uniqueFileName = `${Date.now()}_${filename.replace(/[^a-zA-Z0-9.]/g, '_')}`;
-
         const { data, error } = await supabase.storage.from('documents').createSignedUploadUrl(uniqueFileName);
 
-        if (error) {
-            console.error("Create Signed URL Failed:", error);
-            return res.status(500).json({ error: `Supabase Sign Error: ${error.message}` });
-        }
-        if (!data || !data.signedUrl) {
-            return res.status(500).json({ error: "Supabase did not return a signed URL." });
-        }
+        if (error) return res.status(500).json({ error: `Supabase Sign Error: ${error.message}` });
+        if (!data || !data.signedUrl) return res.status(500).json({ error: "Supabase did not return a signed URL." });
 
         const { data: publicData } = supabase.storage.from('documents').getPublicUrl(uniqueFileName);
-
         return res.status(200).json({ uploadUrl: data.signedUrl, publicUrl: publicData.publicUrl });
     } catch (err: any) {
         console.error("Supabase Handler Critical Error:", err);
@@ -304,7 +279,6 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
         await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${id}, ${name}, ${parentId || null}, ${Date.now()})`;
         return res.status(200).json({ success: true });
     }
-    // FIX: Added Update (Rename) and Delete actions for folders
     if (action === 'update') {
         const { id, name } = body;
         if (!id || !name) return res.status(400).json({ error: "Missing ID or Name" });
@@ -315,22 +289,30 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
         const { id } = body;
         if (!id) return res.status(400).json({ error: "Missing ID" });
         await sql`DELETE FROM app_folders WHERE id = ${id}`;
-        // Optional: Reset folder_id for files in this folder to NULL?
-        // await sql`UPDATE documents SET folder_id = NULL WHERE folder_id = ${id}`;
         return res.status(200).json({ success: true });
     }
     return res.status(400).json({ error: "Invalid Action" });
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    const { handler } = req.query;
+    let { handler } = req.query;
+    // Normalize handler if it's an array (query param repetition)
+    if (Array.isArray(handler)) handler = handler[0];
+    
+    // Normalize casing
+    const action = handler ? String(handler).toLowerCase() : null;
 
     try {
-        if (handler === 'users') return await handleUsers(req, res);
-        if (handler === 'files') return await handleFiles(req, res);
-        if (handler === 'folders') return await handleFolders(req, res);
-        if (handler === 'upload-supabase') return await handleUploadSupabase(req, res);
-        if (handler === 'sign-cloudinary') {
+        if (!action) {
+             // Return 200 to prevent 404s if people hit root /api/app
+             return res.status(200).json({ status: "API Ready", message: "No handler specified" });
+        }
+
+        if (action === 'users') return await handleUsers(req, res);
+        if (action === 'files') return await handleFiles(req, res);
+        if (action === 'folders') return await handleFolders(req, res);
+        if (action === 'upload-supabase') return await handleUploadSupabase(req, res);
+        if (action === 'sign-cloudinary') {
             let cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
             let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
             let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
@@ -343,134 +325,70 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                         apiSecret = matches[2];
                         cloudName = matches[3];
                     }
-                } catch (e) {
-                    console.error("Lỗi phân tích CLOUDINARY_URL:", e);
-                }
+                } catch (e) { console.error("Lỗi phân tích CLOUDINARY_URL:", e); }
             }
 
-            const missing = [];
-            if (!cloudName) missing.push('CLOUDINARY_CLOUD_NAME');
-            if (!apiKey) missing.push('CLOUDINARY_API_KEY');
-            if (!apiSecret) missing.push('CLOUDINARY_API_SECRET');
-
-            if (missing.length > 0) {
-                console.error("Missing Cloudinary Config:", missing.join(', '));
-                return res.status(500).json({ error: `Server thiếu cấu hình Cloudinary: ${missing.join(', ')}.` });
+            if (!cloudName || !apiKey || !apiSecret) {
+                return res.status(500).json({ error: `Server thiếu cấu hình Cloudinary.` });
             }
-
-            // Diagnostic logging (masked)
-            console.log(`[Cloudinary Sign] Using Cloud: ${cloudName}, API Key: ${apiKey?.slice(0, 4)}***, Secret: ${apiSecret?.slice(0, 3)}***${apiSecret?.slice(-3)}`);
 
             const timestamp = Math.round(new Date().getTime() / 1000);
             const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
             return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
         }
 
-        if (handler === 'analytics' || handler === 'usage') {
+        if (action === 'analytics' || action === 'usage') {
             try {
                 const sql = await getSql();
-
-                // Create table if not exists
-                await sql`CREATE TABLE IF NOT EXISTS token_usage (
-                    id TEXT PRIMARY KEY,
-                    model TEXT,
-                    tokens INTEGER,
-                    duration_ms INTEGER,
-                    status TEXT,
-                    timestamp BIGINT,
-                    error_msg TEXT
-                )`;
-
-                // Fix: Migration for existing tables missing certain columns
-                try {
-                    await sql`ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS tokens INTEGER`;
-                    await sql`ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS duration_ms INTEGER`;
-                    await sql`ALTER TABLE token_usage ADD COLUMN IF NOT EXISTS status TEXT`;
-                } catch (migrationErr) {
-                    console.warn("[Migration] Column registration failed", migrationErr);
-                }
-
-                // Parse filters from body
+                await sql`CREATE TABLE IF NOT EXISTS token_usage (id TEXT PRIMARY KEY, model TEXT, tokens INTEGER, duration_ms INTEGER, status TEXT, timestamp BIGINT, error_msg TEXT)`;
+                
+                // Parse filters
                 let body = req.body || {};
                 if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
                 const { startDate, endDate, model } = body;
 
-                // Build query with filters
                 let query;
                 if (startDate && endDate && model && model !== 'all') {
-                    query = await sql`
-                        SELECT model, tokens, duration_ms, status, timestamp, error_msg 
-                        FROM token_usage 
-                        WHERE timestamp >= ${startDate} AND timestamp <= ${endDate}
-                        AND model ILIKE ${`%${model}%`}
-                        ORDER BY timestamp DESC 
-                        LIMIT 100
-                    `;
+                    query = await sql`SELECT * FROM token_usage WHERE timestamp >= ${startDate} AND timestamp <= ${endDate} AND model ILIKE ${`%${model}%`} ORDER BY timestamp DESC LIMIT 100`;
                 } else if (startDate && endDate) {
-                    query = await sql`
-                        SELECT model, tokens, duration_ms, status, timestamp, error_msg 
-                        FROM token_usage 
-                        WHERE timestamp >= ${startDate} AND timestamp <= ${endDate}
-                        ORDER BY timestamp DESC 
-                        LIMIT 100
-                    `;
+                    query = await sql`SELECT * FROM token_usage WHERE timestamp >= ${startDate} AND timestamp <= ${endDate} ORDER BY timestamp DESC LIMIT 100`;
                 } else {
-                    query = await sql`
-                        SELECT model, tokens, duration_ms, status, timestamp, error_msg 
-                        FROM token_usage 
-                        ORDER BY timestamp DESC 
-                        LIMIT 100
-                    `;
+                    query = await sql`SELECT * FROM token_usage ORDER BY timestamp DESC LIMIT 100`;
                 }
 
                 const data = query;
-
-                // Calculate summary statistics
                 const summary = {
                     totalRequests: data.length,
                     totalTokens: data.reduce((sum: number, r: any) => sum + (r.tokens || 0), 0),
-                    avgLatency: data.length > 0
-                        ? Math.round(data.reduce((sum: number, r: any) => sum + (r.duration_ms || 0), 0) / data.length)
-                        : 0,
+                    avgLatency: data.length > 0 ? Math.round(data.reduce((sum: number, r: any) => sum + (r.duration_ms || 0), 0) / data.length) : 0,
                     totalErrors: data.filter((r: any) => r.status === 'error').length
                 };
 
-                // Group by model for overview chart
-                const modelStats: Record<string, { requests: number, errors: number, model: string }> = {};
+                const modelStats: Record<string, any> = {};
+                const dayStats: Record<string, any> = {};
                 for (const row of data) {
                     const m = row.model || 'unknown';
                     if (!modelStats[m]) modelStats[m] = { model: m, requests: 0, errors: 0 };
                     modelStats[m].requests++;
                     if (row.status === 'error') modelStats[m].errors++;
-                }
 
-                // Group by day for trend chart
-                const dayStats: Record<string, { day: string, requests: number }> = {};
-                for (const row of data) {
                     const day = new Date(Number(row.timestamp)).toISOString().split('T')[0];
                     if (!dayStats[day]) dayStats[day] = { day, requests: 0 };
                     dayStats[day].requests++;
                 }
 
                 return res.status(200).json({
-                    data: Object.values(modelStats), // For table breakdown
-                    recentLogs: data.slice(0, 50), // For logs tab
+                    data: Object.values(modelStats), 
+                    recentLogs: data.slice(0, 50),
                     summary,
-                    trend: Object.values(dayStats).sort((a, b) => a.day.localeCompare(b.day)) // For chart
+                    trend: Object.values(dayStats).sort((a: any, b: any) => a.day.localeCompare(b.day))
                 });
             } catch (e: any) {
-                console.error("Analytics Error Full:", e);
-                // Return empty set instead of 500 to keep dashboard alive
-                return res.status(200).json({
-                    data: [],
-                    recentLogs: [],
-                    summary: { totalRequests: 0, totalTokens: 0, avgLatency: 0, totalErrors: 0 },
-                    trend: []
-                });
+                return res.status(200).json({ data: [], recentLogs: [], summary: {}, trend: [] });
             }
         }
 
-        if (handler === 'config') {
+        if (action === 'config') {
             try {
                 const sql = await getSql();
                 await sql`CREATE TABLE IF NOT EXISTS system_settings (id TEXT PRIMARY KEY, data TEXT)`;
@@ -485,14 +403,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     if (rows.length > 0) {
                         return res.status(200).json(JSON.parse(rows[0].data));
                     }
-                    return res.status(200).json({}); // Return empty if no config saved
+                    return res.status(200).json({}); 
                 }
             } catch (e: any) {
                 return res.status(500).json({ error: `Config Error: ${e.message}` });
             }
         }
 
-        return res.status(404).end();
+        return res.status(404).json({ error: `Handler '${action}' not found` });
     } catch (e: any) {
         console.error("API Handler Error:", e);
         return res.status(500).json({ error: e.message || "Lỗi Server không xác định" });

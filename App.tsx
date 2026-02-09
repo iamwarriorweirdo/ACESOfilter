@@ -15,11 +15,16 @@ const safeFetchJson = async (url: string, options?: RequestInit) => {
             let errorMsg = `Server Error (${response.status})`;
             try {
                 const text = await response.text();
-                try {
-                    const json = JSON.parse(text);
-                    if (json.error) errorMsg = json.error;
-                } catch {
-                    if (text.length < 200) errorMsg = text;
+                // Check for HTML 404 from Vercel/Vite or explicit 404 text
+                if (response.status === 404 || text.includes('<!DOCTYPE html>') || text.includes('NOT_FOUND')) {
+                    errorMsg = `Endpoint not found (404)`;
+                } else {
+                    try {
+                        const json = JSON.parse(text);
+                        if (json.error) errorMsg = json.error;
+                    } catch {
+                        if (text.length < 200) errorMsg = text;
+                    }
                 }
             } catch (e) { }
             throw new Error(errorMsg);
@@ -59,7 +64,14 @@ const App: React.FC = () => {
                 if (savedConfig && Object.keys(savedConfig).length > 0) {
                     setConfig(prev => ({ ...prev, ...savedConfig }));
                 }
-            } catch (e) { console.error("Failed to load system config", e); }
+            } catch (e: any) { 
+                // Suppress 404 errors which likely mean backend isn't running locally
+                if (e.message && (e.message.includes('404') || e.message.includes('Endpoint not found'))) {
+                    console.warn("System config endpoint not found (Backend offline?). Using default config.");
+                } else {
+                    console.error("Failed to load system config:", e); 
+                }
+            }
         };
         loadConfig();
     }, []);
@@ -249,7 +261,6 @@ const App: React.FC = () => {
                     try {
                         // Dynamic import to avoid bundle bloat if unused
                         const { compressDocx } = await import('./utils/docxCompression');
-                        // Update status in a hacky way or just log (React state update inside async loop is tricky without proper tracking)
                         console.log(`AUTO-COMPRESSING: ${file.name}`);
                         fileToUpload = await compressDocx(file);
 
