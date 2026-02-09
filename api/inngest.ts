@@ -171,10 +171,12 @@ const processFileInBackground = inngest.createFunction(
         }
 
         return {
-          extractedText,
+          extractedText, // Text is usually small enough
           parseMethod,
           needsAiVision,
-          fileBase64: (needsAiVision && fileBuffer.length < 9 * 1024 * 1024) ? fileBuffer.toString('base64') : null
+          // FIX: Do NOT return the huge base64 string here to avoid Inngest step size limit.
+          // The next step (ocr-recovery) will automatically re-download the file if this is null.
+          fileBase64: null 
         };
       });
 
@@ -188,6 +190,7 @@ const processFileInBackground = inngest.createFunction(
           let base64 = parseResult.fileBase64;
           
           if (!base64) {
+            // Re-download strategy to bypass step size limit
             const ab = await fetchFileBuffer(url);
             base64 = Buffer.from(ab).toString('base64');
           }

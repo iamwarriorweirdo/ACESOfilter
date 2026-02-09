@@ -388,10 +388,11 @@ const processFileInBackground = inngest.createFunction(
         }
 
         return {
-          extractedText,
+          extractedText, // Pass text (usually fine)
           parseMethod,
           needsAiVision,
-          fileBase64: (needsAiVision && fileBuffer.length < 3.8 * 1024 * 1024) ? fileBuffer.toString('base64') : null
+          // FIX: Do NOT return large binary chunks. Rely on next step to re-download.
+          fileBase64: null 
         };
       });
 
@@ -404,6 +405,7 @@ const processFileInBackground = inngest.createFunction(
           await updateDbStatus(docId, `Activating ${ocrModel} (Computer Vision)...`);
           let base64 = parseResult.fileBase64;
           if (!base64) {
+            // Re-fetch here to bypass payload limits
             const ab = await fetchFileBuffer(url);
             base64 = Buffer.from(ab).toString('base64');
           }
