@@ -33,7 +33,53 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
   } catch (e) { }
 }
 
-// Advanced HF Inference for Vision Models
+async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mini') {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        body: JSON.stringify({
+            model: model,
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: "OCR Task: Extract ALL text from this image verbatim. Return ONLY the text." },
+                        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${bufferBase64}` } }
+                    ]
+                }
+            ],
+            max_tokens: 2000
+        })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return data.choices[0]?.message?.content || "";
+}
+
+// New: Call Groq Vision
+async function callGroqVision(bufferBase64: string, model: string = 'llama-3.2-11b-vision-preview') {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) throw new Error("Missing GROQ_API_KEY");
+    const groq = new Groq({ apiKey });
+
+    const chatCompletion = await groq.chat.completions.create({
+        messages: [
+            {
+                role: "user",
+                content: [
+                    { type: "text", text: "Extract text from this image." },
+                    { type: "image_url", image_url: { url: `data:image/jpeg;base64,${bufferBase64}` } },
+                ],
+            },
+        ],
+        model: model,
+    });
+    return chatCompletion.choices[0]?.message?.content || "";
+}
+
 async function callHFInference(buffer: Buffer, modelId: string) {
     const hfKey = process.env.HUGGING_FACE_API_KEY;
     if (!hfKey) throw new Error("Missing HUGGING_FACE_API_KEY");
@@ -71,12 +117,10 @@ async function callHFInference(buffer: Buffer, modelId: string) {
     
     const result = await response.json();
     
-    // Error handling
     if (result.error) {
          throw new Error(`HF Error: ${result.error}`);
     }
 
-    // Parsing strategies
     if (Array.isArray(result) && result[0]?.generated_text) return result[0].generated_text;
     if (result.generated_text) return result.generated_text;
     
@@ -114,6 +158,7 @@ const processFileInBackground = inngest.createFunction(
       });
       
       const preferredOcrModel = configStep.ocrModel || 'gemini-3-flash-preview';
+      const preferredEmbeddingModel = configStep.embeddingModel || 'text-embedding-004';
 
       const parseResult = await step.run("extract-text", async () => {
         await updateDbStatus(docId, `Bắt đầu xử lý: ${fileName}`);
@@ -152,27 +197,33 @@ const processFileInBackground = inngest.createFunction(
         let text = parseResult.text;
         let method = parseResult.method;
 
-        // Condition to trigger AI OCR:
-        // 1. Text too short/garbage
-        // 2. Explicitly selected HF or Phi-3
-        // 3. Explicitly selected Gemini Vision
+        // Condition to trigger AI OCR
         const isAIRequired = !text || text.trim().length < 20 || 
                              preferredOcrModel.includes('huggingface') || 
                              preferredOcrModel.includes('florence') ||
                              preferredOcrModel.includes('phi-3') ||
-                             preferredOcrModel.includes('vision');
+                             preferredOcrModel.includes('vision') ||
+                             preferredOcrModel.includes('gpt');
 
         if (isAIRequired) {
           try {
-             if (preferredOcrModel.includes('huggingface') || preferredOcrModel.includes('florence') || preferredOcrModel.includes('phi-3')) {
+             if (preferredOcrModel.startsWith('gpt')) {
+                 await updateDbStatus(docId, `Sử dụng OpenAI Vision (${preferredOcrModel})...`);
+                 text = await callOpenAIVision(parseResult.bufferBase64, preferredOcrModel);
+                 method = "openai-vision";
+             } else if (preferredOcrModel.includes('llama') && preferredOcrModel.includes('vision')) {
+                 await updateDbStatus(docId, `Sử dụng Groq Vision (${preferredOcrModel})...`);
+                 text = await callGroqVision(parseResult.bufferBase64, preferredOcrModel);
+                 method = "groq-vision";
+             } else if (preferredOcrModel.includes('huggingface') || preferredOcrModel.includes('florence') || preferredOcrModel.includes('phi-3')) {
                  const modelId = preferredOcrModel.includes('/') ? preferredOcrModel : "microsoft/Florence-2-base";
                  await updateDbStatus(docId, `Chuyển sang HF Inference: ${modelId}...`);
-                 
                  const buf = Buffer.isBuffer(parseResult.buffer) ? parseResult.buffer : Buffer.from(parseResult.buffer as any);
                  text = await callHFInference(buf, modelId);
-                 method = modelId.split('/')[1] || "hf-model";
+                 method = "hf-model";
              } else {
-                await updateDbStatus(docId, "Sử dụng Gemini 3.0 Vision OCR...");
+                await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
+                // Default Gemini
                 const res = await ai.models.generateContent({
                   model: 'gemini-3-flash-preview',
                   contents: [{ role: 'user', parts: [
@@ -184,17 +235,17 @@ const processFileInBackground = inngest.createFunction(
                 method = "gemini-ocr-vision";
              }
           } catch (e: any) {
-            await updateDbStatus(docId, `OCR Error (${method}): ${e.message}. Retrying with Gemini Fallback...`);
-            // Fallback to Gemini if HF fails
+            await updateDbStatus(docId, `OCR Error (${method}): ${e.message}. Retrying with Fallback...`);
              try {
+                 // Fallback to Gemini if main choice failed
                 const res = await ai.models.generateContent({
-                  model: 'gemini-3-flash-preview',
+                  model: 'gemini-2.0-flash-exp', // Use fallback model
                   contents: [{ role: 'user', parts: [
                     { inlineData: { data: parseResult.bufferBase64, mimeType: 'application/octet-stream' } },
                     { text: "Recover text content from this file." }
                   ]}]
                 });
-                text = res.text || text; // Use Gemini text if successful
+                text = res.text || text;
                 if (res.text) method = "gemini-fallback";
              } catch (geminiErr) {
                  if (!text) throw new Error("All OCR methods failed.");
@@ -206,18 +257,41 @@ const processFileInBackground = inngest.createFunction(
 
       await step.run("indexing", async () => {
           let meta = { title: fileName, summary: "Tài liệu", key_information: [], language: "vi" };
+          const analysisModel = configStep.analysisModel || 'gemini-3-flash-preview';
+          
           try {
-             // Sử dụng model được cấu hình để phân tích JSON
-             const analysisModel = configStep.analysisModel || 'gemini-3-flash-preview';
-             const res = await ai.models.generateContent({
-                model: analysisModel,
-                contents: [{ role: 'user', parts: [{ text: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }] }],
-                config: { responseMimeType: 'application/json' }
-             });
-             meta = JSON.parse(res.text || "{}");
+             if (analysisModel.startsWith('gpt')) {
+                  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+                    body: JSON.stringify({
+                        model: analysisModel,
+                        messages: [{ role: "user", content: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }],
+                        response_format: { type: "json_object" }
+                    })
+                });
+                const data = await res.json();
+                meta = JSON.parse(data.choices[0]?.message?.content || "{}");
+             } else if (analysisModel.includes('llama') || analysisModel.includes('mixtral')) {
+                // Groq
+                const groqRes = await groq.chat.completions.create({
+                    messages: [{ role: "user", content: `JSON metadata cho văn bản: ${finalResult.text.substring(0, 3000)}` }],
+                    model: analysisModel,
+                    response_format: { type: "json_object" }
+                });
+                meta = JSON.parse(groqRes.choices[0]?.message?.content || "{}");
+             } else {
+                 // Default Gemini
+                 const res = await ai.models.generateContent({
+                    model: analysisModel,
+                    contents: [{ role: 'user', parts: [{ text: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }] }],
+                    config: { responseMimeType: 'application/json' }
+                 });
+                 meta = JSON.parse(res.text || "{}");
+             }
           } catch (e) {
+             // Generic Fallback
              try {
-                // Failover sang Groq
                 const groqRes = await groq.chat.completions.create({
                     messages: [{ role: "user", content: `JSON metadata cho văn bản: ${finalResult.text.substring(0, 3000)}` }],
                     model: "llama-3.1-70b-versatile",
@@ -235,17 +309,31 @@ const processFileInBackground = inngest.createFunction(
 
           // Vector Indexing
           try {
-              const emb = await ai.models.embedContent({
-                  model: "text-embedding-004",
-                  contents: [{ parts: [{ text: finalResult.text.substring(0, 3000) }] }]
-              });
-              const vector = emb.embeddings?.[0]?.values || [];
+              let vector: number[] = [];
+              
+              if (preferredEmbeddingModel.includes('text-embedding-3') && process.env.OPENAI_API_KEY) {
+                   const res = await fetch("https://api.openai.com/v1/embeddings", {
+                       method: "POST",
+                       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+                       body: JSON.stringify({ model: preferredEmbeddingModel, input: finalResult.text.substring(0, 3000) })
+                   });
+                   const data = await res.json();
+                   vector = data.data?.[0]?.embedding || [];
+              } else {
+                  // Default Gemini
+                  const emb = await ai.models.embedContent({
+                      model: "text-embedding-004",
+                      contents: [{ parts: [{ text: finalResult.text.substring(0, 3000) }] }]
+                  });
+                  vector = emb.embeddings?.[0]?.values || [];
+              }
+
               if (vector.length > 0 && process.env.PINECONE_API_KEY) {
                   const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
                   await pc.index(process.env.PINECONE_INDEX_NAME!).upsert([{ id: docId, values: vector, metadata: { filename: fileName, text: finalResult.text.substring(0, 4000) } }] as any);
               }
           } catch (e) {
-              await updateDbStatus(docId, "Hoàn tất (Vector Search dự phòng HF chưa kích hoạt).");
+              await updateDbStatus(docId, "Hoàn tất (Vector Search dự phòng chưa kích hoạt).");
           }
       });
     } catch (e: any) {

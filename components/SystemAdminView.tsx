@@ -1,7 +1,7 @@
 
 import { SystemConfig, Language, Document } from '../types';
 import { TRANSLATIONS } from '../constants';
-import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight } from 'lucide-react';
+import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight, Workflow } from 'lucide-react';
 import React, { useState, useEffect } from 'react';
 
 interface SystemAdminViewProps {
@@ -67,10 +67,10 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                 {/* Status Dashboard */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
                     <StatusCard icon={<Activity className="text-green-500" />} label="Hệ thống" value="Active" sub="Multi-Cloud Failover" borderColor="border-green-500/20" />
-                    <StatusCard icon={<Zap className="text-yellow-500" />} label="Dự phòng Groq" value={process.env.GROQ_API_KEY ? "READY" : "OFF"} sub="Llama-3-70B" borderColor="border-yellow-500/20" />
-                    <StatusCard icon={<Cloud className="text-blue-500" />} label="Hugging Face" value={process.env.HUGGING_FACE_API_KEY ? "ONLINE" : "OFF"} sub="Phi-3 / Florence-2" borderColor="border-blue-500/20" />
+                    <StatusCard icon={<Zap className="text-orange-500" />} label="Groq AI" value={process.env.GROQ_API_KEY ? "READY" : "OFF"} sub="Llama-3.3 / Qwen" borderColor="border-orange-500/20" />
+                    <StatusCard icon={<Cloud className="text-blue-500" />} label="OpenAI" value={process.env.OPENAI_API_KEY ? "ONLINE" : "CHECK ENV"} sub="GPT-4o Mini (Free Tier)" borderColor="border-blue-500/20" />
                     <StatusCard icon={<Layers className="text-indigo-500" />} label="Dung lượng" value={`${totalSizeMB} MB`} sub="Hybrid DB" borderColor="border-indigo-500/20" />
-                    <StatusCard icon={<Cpu className="text-amber-500" />} label="Model chính" value="GEMINI 3.0" sub="Standard OCR" borderColor="border-amber-500/20" />
+                    <StatusCard icon={<Cpu className="text-amber-500" />} label="Model chính" value={localConfig.chatModel?.split('-')[0].toUpperCase() || "GEMINI"} sub="Active Engine" borderColor="border-amber-500/20" />
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -92,94 +92,114 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <ConfigField label="OCR Strategy (Vision)" sub="Dùng để trích xuất chữ từ ảnh/PDF scan">
+                                <ConfigField label="OCR Strategy (Vision)" sub="Trích xuất chữ từ ảnh/PDF scan (Ưu tiên Vision Models)">
                                     <select 
                                         value={localConfig.ocrModel || 'gemini-3-flash-preview'}
                                         onChange={e => handleLocalChange('ocrModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
                                     >
-                                        <option value="gemini-3-flash-preview">Gemini 3.0 Flash (Nhanh/Chính xác)</option>
-                                        <option value="gemini-3-pro-preview">Gemini 3.0 Pro (Phức tạp/Dung lượng lớn)</option>
-                                        <option value="gemini-2.5-flash-lite-latest">Gemini 2.5 Flash Lite (Tiết kiệm)</option>
-                                        <option value="microsoft/Florence-2-base">HF: Microsoft Florence-2 (Standard OCR)</option>
-                                        <option value="microsoft/Phi-3-vision-128k-instruct">HF: Microsoft Phi-3 Vision (Advanced VLM)</option>
+                                        <optgroup label="Google Gemini">
+                                            <option value="gemini-3-flash-preview">Gemini 3.0 Flash (Recommended)</option>
+                                            <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                        </optgroup>
+                                        <optgroup label="OpenAI (Free Tier Eligible)">
+                                            <option value="gpt-4o-mini">GPT-4o Mini (Vision Capable)</option>
+                                        </optgroup>
+                                        <optgroup label="Groq / Hugging Face">
+                                            <option value="llama-3.2-11b-vision-preview">Groq: Llama 3.2 11B Vision</option>
+                                            <option value="llama-3.2-90b-vision-preview">Groq: Llama 3.2 90B Vision</option>
+                                            <option value="microsoft/Florence-2-base">HF: Florence-2 (Standard OCR)</option>
+                                        </optgroup>
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Analysis Engine" sub="Dùng để phân loại và tóm tắt JSON">
+                                <ConfigField label="Embedding Model (RAG)" sub="Tạo Vector cho tìm kiếm ngữ nghĩa">
+                                    <select 
+                                        value={localConfig.embeddingModel || 'text-embedding-004'}
+                                        onChange={e => handleLocalChange('embeddingModel', e.target.value)}
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                    >
+                                        <optgroup label="Google Gemini">
+                                            <option value="text-embedding-004">Gemini Text Embedding 004</option>
+                                        </optgroup>
+                                        <optgroup label="OpenAI">
+                                            <option value="text-embedding-3-small">OpenAI Text Embedding 3 Small</option>
+                                            <option value="text-embedding-3-large">OpenAI Text Embedding 3 Large</option>
+                                        </optgroup>
+                                    </select>
+                                </ConfigField>
+
+                                <ConfigField label="Analysis Engine" sub="Phân loại và tóm tắt JSON Metadata">
                                     <select 
                                         value={localConfig.analysisModel || 'gemini-3-flash-preview'}
                                         onChange={e => handleLocalChange('analysisModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
                                     >
                                         <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-                                        <option value="gemini-3-pro-preview">Gemini 3.0 Pro (Tốt nhất cho JSON)</option>
+                                        <option value="gpt-4o-mini">OpenAI GPT-4o Mini</option>
+                                        <option value="llama-3.3-70b-versatile">Groq Llama 3.3 70B (Fast JSON)</option>
+                                        <option value="mixtral-8x7b-32768">Groq Mixtral 8x7B</option>
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Chat RAG Interface" sub="Model tương tác trực tiếp với người dùng">
+                                <ConfigField label="Chat RAG Interface" sub="Model tương tác chính với người dùng">
                                     <select 
-                                        value={localConfig.chatModel || 'gemini-2.5-flash-lite'}
+                                        value={localConfig.chatModel || 'gemini-3-flash-preview'}
                                         onChange={e => handleLocalChange('chatModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
                                     >
-                                        <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (Siêu nhanh)</option>
-                                        <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-                                        <option value="gemini-3-pro-preview">Gemini 3.0 Pro (Thông minh nhất)</option>
+                                        <optgroup label="Google Gemini">
+                                            <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+                                            <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                                            <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                        </optgroup>
+                                        <optgroup label="Groq (High Speed)">
+                                            <option value="llama-3.3-70b-versatile">Llama 3.3 70B Versatile</option>
+                                            <option value="llama-3.1-8b-instant">Llama 3.1 8B Instant</option>
+                                            <option value="qwen-2.5-32b">Qwen 2.5 32B</option>
+                                            <option value="gemma2-9b-it">Gemma 2 9B IT</option>
+                                        </optgroup>
+                                        <optgroup label="OpenAI">
+                                            <option value="gpt-4o-mini">GPT-4o Mini (Best Cost/Perf)</option>
+                                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                                        </optgroup>
                                     </select>
-                                </ConfigField>
-
-                                <ConfigField label="Max Ingest Size (MB)" sub="Giới hạn dung lượng tệp cho phép tải lên">
-                                    <div className="flex items-center gap-3">
-                                        <input 
-                                            type="number" 
-                                            value={localConfig.maxFileSizeMB}
-                                            onChange={e => handleLocalChange('maxFileSizeMB', Number(e.target.value))}
-                                            className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold outline-none"
-                                        />
-                                        <span className="text-xs font-black text-muted-foreground">MB</span>
-                                    </div>
                                 </ConfigField>
                             </div>
                         </div>
 
-                        {/* Adobe Integration */}
+                        {/* External APIs Integration */}
                         <div className="bg-card border border-border rounded-[2rem] p-8 shadow-sm space-y-6">
                             <div className="flex items-center justify-between border-b border-border pb-4">
                                 <div className="flex items-center gap-3">
                                     <Key className="text-orange-500" />
-                                    <h3 className="text-xl font-bold uppercase tracking-tight">Adobe PDF Services</h3>
-                                </div>
-                                <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase ${localConfig.enableAdobeCompression ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'}`}>
-                                    {localConfig.enableAdobeCompression ? 'Connected' : 'Disconnected'}
+                                    <h3 className="text-xl font-bold uppercase tracking-tight">API & Keys Configuration</h3>
                                 </div>
                             </div>
                             
                             <div className="space-y-4">
-                                <div className="flex items-center gap-4 p-4 bg-orange-500/5 border border-orange-500/10 rounded-2xl">
-                                    <ShieldAlert className="text-orange-500 shrink-0" size={20} />
-                                    <p className="text-xs text-orange-400/80 leading-relaxed font-medium">
-                                        Sử dụng Adobe PDF Services để nén và tối ưu hóa tài liệu PDF &gt;50MB trước khi xử lý AI. Yêu cầu tài khoản Adobe Developer.
-                                    </p>
-                                </div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
-                                    <ConfigField label="Adobe Client ID" sub="Lấy từ Adobe Developer Console">
+                                <p className="text-xs text-muted-foreground italic bg-muted/30 p-3 rounded-lg border border-border">
+                                    Lưu ý: Các API Key dưới đây sẽ được lưu vào biến môi trường hệ thống. Nếu bạn đã thiết lập trong Vercel Environment Variables, không cần điền vào đây.
+                                </p>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                                    <ConfigField label="Adobe Client ID" sub="Dùng để nén PDF (Tùy chọn)">
                                         <input 
                                             type="password"
                                             value={localConfig.adobeClientId || ''}
                                             onChange={e => handleLocalChange('adobeClientId', e.target.value)}
                                             className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-mono outline-none"
-                                            placeholder="••••••••"
+                                            placeholder={process.env.ADOBE_CLIENT_ID ? "•••• (Set in Env)" : "Enter Client ID"}
                                         />
                                     </ConfigField>
-                                    <ConfigField label="Adobe Client Secret" sub="Khóa bí mật truy cập API">
+                                    <ConfigField label="OpenAI API Key" sub="Dùng cho GPT-4o Mini / Embeddings">
                                         <input 
                                             type="password"
-                                            value={localConfig.adobeClientSecret || ''}
-                                            onChange={e => handleLocalChange('adobeClientSecret', e.target.value)}
+                                            onChange={e => {/* Logic to save this securely would go here, currently UI only */}}
                                             className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-mono outline-none"
-                                            placeholder="••••••••"
+                                            placeholder={process.env.OPENAI_API_KEY ? "•••••••• (Active)" : "sk-..."}
+                                            disabled={true} 
                                         />
+                                        <div className="text-[10px] text-blue-500 mt-1">* Vui lòng set OPENAI_API_KEY trong Vercel Dashboard để bảo mật.</div>
                                     </ConfigField>
                                 </div>
                                 <div className="flex items-center gap-3">

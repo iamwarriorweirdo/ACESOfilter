@@ -63,6 +63,7 @@ export interface SystemConfig {
   ocrModel?: string;      // Dedicated for Vision/OCR
   analysisModel?: string; // Dedicated for Metadata/JSON extraction
   chatModel?: string;     // Dedicated for RAG Chat UI
+  embeddingModel?: string; // Dedicated for Vector Search
   hfModel?: string;       // Hugging Face Model ID
   maxFileSizeMB: number;
   // Adobe PDF Services Integration
