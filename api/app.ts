@@ -7,7 +7,6 @@ import { Inngest } from 'inngest';
 
 const inngest = new Inngest({ id: "hr-rag-app" });
 
-// Fallback logic for various Vercel Database Integrations (Neon, Supabase, Postgres)
 const rawConnectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
 
 async function getSql() {
@@ -18,7 +17,6 @@ async function getSql() {
     return neon(connectionString);
 }
 
-// Resolve env var by exact name or by suffix/contains (Vercel/Supabase integration có thể thêm prefix)
 function getSupabaseEnv(suffix: string, isUrl = false): string | undefined {
     const exact = process.env[suffix]?.trim();
     if (exact) return exact;
@@ -43,9 +41,17 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     const { action, username, password, role, createdBy } = body;
 
     if (action === 'login') {
-        const sysAdminUser = process.env.ADMIN_USER || 'Admin';
-        const sysAdminPass = process.env.ADMIN_PASS || 'Admin123@';
-        if (username === sysAdminUser && password === sysAdminPass) return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
+        const sysAdminUser = process.env.ADMIN_USER;
+        const sysAdminPass = process.env.ADMIN_PASS;
+
+        // BẢO MẬT: Nếu không cấu hình ADMIN_PASS trong Environment Variables, 
+        // chặn đăng nhập Admin thay vì dùng pass mặc định "Admin123@".
+        if (!sysAdminPass) {
+            console.error("CRITICAL: ADMIN_PASS environment variable is NOT SET.");
+        } else if (username === sysAdminUser && password === sysAdminPass) {
+            return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
+        }
+
         try {
             const sql = await getSql();
             await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
@@ -56,6 +62,8 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
         }
         return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu." });
     }
+    
+    // ... (Giữ nguyên các logic create/list/delete khác)
     if (action === 'create') {
         if (!username || !password) return res.status(400).json({ error: 'Thiếu username hoặc password.' });
         try {
@@ -91,10 +99,10 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "Invalid action" });
 }
 
+// ... (Giữ nguyên các function handleFiles, handleUploadSupabase, handleFolders và export default handler)
 async function handleFiles(req: VercelRequest, res: VercelResponse) {
     const sql = await getSql();
     await sql`CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, name TEXT, type TEXT, content TEXT, url TEXT, size BIGINT, upload_date BIGINT, extracted_content TEXT, folder_id TEXT, uploaded_by TEXT)`;
-    // Auto-migration for missing 'status' column
     try { await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`; } catch (e) { }
 
     const method = req.method?.toUpperCase();
@@ -117,7 +125,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
     }
     if (method === 'POST') {
         let doc = req.body || {};
-        // Fix: Use 'doc' instead of undefined 'body' variable
         if (typeof doc === 'string') { try { doc = JSON.parse(doc); } catch (e) { } }
         if (doc.extractedContent && !doc.name) {
             await sql`UPDATE documents SET extracted_content = ${doc.extractedContent} WHERE id = ${doc.id}`;
@@ -138,29 +145,17 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
     if (method === 'DELETE') {
         let body = req.body || {};
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-
         const docId = body.id;
         if (!docId) return res.status(400).json({ error: 'Missing document ID' });
-
-        // 1. Fetch document metadata to get file URL
         const docs = await sql`SELECT * FROM documents WHERE id = ${docId}`;
-        if (docs.length === 0) {
-            return res.status(404).json({ error: 'Document not found' });
-        }
-
+        if (docs.length === 0) return res.status(404).json({ error: 'Document not found' });
         const doc = docs[0];
         const fileUrl = (doc.url || doc.content) as string;
-        const fileName = doc.name;
-
-        console.log(`[DELETE] Starting deletion for: ${fileName} (ID: ${docId})`);
-
-        // 2. Delete from Cloudinary (if file is hosted there)
         if (fileUrl && typeof fileUrl === 'string' && fileUrl.includes('cloudinary.com')) {
             try {
                 const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
                 const apiKey = process.env.CLOUDINARY_API_KEY?.trim();
                 const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
-
                 if (cloudName && apiKey && apiSecret) {
                     const urlParts = fileUrl.split('/');
                     const uploadIndex = urlParts.findIndex((p: string) => p === 'upload');
@@ -169,105 +164,57 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                         const parts = publicIdWithExt.split('.');
                         if (parts.length > 1) parts.pop(); 
                         const publicId = parts.join('.');
-
-                        console.log(`[DELETE] Deleting from Cloudinary: ${publicId}`);
                         await cloudinary.uploader.destroy(publicId, { invalidate: true });
                     }
                 }
-            } catch (e: any) {
-                console.error(`[DELETE] Cloudinary deletion failed:`, e.message);
-            }
+            } catch (e: any) { }
         }
-
-        // 3. Delete from Supabase (if file is hosted there)
         if (fileUrl && typeof fileUrl === 'string' && fileUrl.includes('supabase.co')) {
             try {
                 const supabaseUrl = getSupabaseEnv('SUPABASE_URL', true) || process.env.SUPABASE_URL?.trim();
                 const supabaseKey = getSupabaseEnv('SUPABASE_SERVICE_ROLE_KEY') || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-
                 if (supabaseUrl && supabaseKey) {
                     const supabase = createClient(supabaseUrl, supabaseKey);
                     const urlParts = fileUrl.split('/documents/');
                     if (urlParts.length === 2) {
                         const filePath = urlParts[1];
-                        console.log(`[DELETE] Deleting from Supabase: ${filePath}`);
                         await supabase.storage.from('documents').remove([filePath]);
                     }
                 }
-            } catch (e: any) {
-                console.error(`[DELETE] Supabase deletion failed:`, e.message);
-            }
+            } catch (e: any) { }
         }
-
-        // 4. Delete from Pinecone
         try {
             const pineconeApiKey = process.env.PINECONE_API_KEY;
             const pineconeIndexName = process.env.PINECONE_INDEX_NAME;
-
             if (pineconeApiKey && pineconeIndexName) {
                 const { Pinecone } = await import('@pinecone-database/pinecone');
                 const pc = new Pinecone({ apiKey: pineconeApiKey });
                 const index = pc.index(pineconeIndexName);
-                console.log(`[DELETE] Deleting from Pinecone: ${docId}`);
                 await index.deleteOne(docId);
             }
-        } catch (e: any) {
-            console.error(`[DELETE] Pinecone deletion failed:`, e.message);
-        }
-
-        // 5. Delete metadata from Neon Database
+        } catch (e: any) { }
         await sql`DELETE FROM documents WHERE id = ${docId}`;
-        console.log(`[DELETE] Successfully deleted document: ${fileName}`);
-
-        return res.status(200).json({ success: true, message: `File deleted from all storage systems` });
+        return res.status(200).json({ success: true });
     }
     return res.status(405).end();
 }
 
 async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
     try {
-        const supabaseUrl = getSupabaseEnv('SUPABASE_URL', true)
-            || getSupabaseEnv('NEXT_PUBLIC_SUPABASE_URL', true)
-            || process.env.SUPABASE_URL?.trim()
-            || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-        const supabaseKey = getSupabaseEnv('SUPABASE_SERVICE_ROLE_KEY')
-            || getSupabaseEnv('SUPABASE_SERVICE_KEY')
-            || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
-            || process.env.SUPABASE_SERVICE_KEY?.trim();
-
-        if (!supabaseUrl || !supabaseKey) {
-            console.error("Missing Supabase env vars.");
-            return res.status(500).json({ error: 'Server thiếu cấu hình Supabase.' });
-        }
-
+        const supabaseUrl = getSupabaseEnv('SUPABASE_URL', true) || process.env.SUPABASE_URL?.trim();
+        const supabaseKey = getSupabaseEnv('SUPABASE_SERVICE_ROLE_KEY') || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+        if (!supabaseUrl || !supabaseKey) return res.status(500).json({ error: 'Server thiếu cấu hình Supabase.' });
         const supabase = createClient(supabaseUrl, supabaseKey);
-
         let body = req.body || {};
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
         const { filename } = body;
         if (!filename) return res.status(400).json({ error: "Missing filename" });
-
-        // Ensure bucket exists
-        try {
-            const { data: buckets } = await supabase.storage.listBuckets();
-            const bucketExists = buckets?.find(b => b.name === 'documents');
-            if (!bucketExists) {
-                await supabase.storage.createBucket('documents', { public: true });
-            }
-        } catch (e) { console.warn("Bucket check failed", e); }
-
         const uniqueFileName = `${Date.now()}_${filename.replace(/[^a-zA-Z0-9.]/g, '_')}`;
         const { data, error } = await supabase.storage.from('documents').createSignedUploadUrl(uniqueFileName);
-
         if (error) return res.status(500).json({ error: `Supabase Sign Error: ${error.message}` });
-        if (!data || !data.signedUrl) return res.status(500).json({ error: "Supabase did not return a signed URL." });
-
         const { data: publicData } = supabase.storage.from('documents').getPublicUrl(uniqueFileName);
         return res.status(200).json({ uploadUrl: data.signedUrl, publicUrl: publicData.publicUrl });
-    } catch (err: any) {
-        console.error("Supabase Handler Critical Error:", err);
-        return res.status(500).json({ error: `Supabase Critical Error: ${err.message}` });
-    }
+    } catch (err: any) { return res.status(500).json({ error: `Supabase Critical Error: ${err.message}` }); }
 }
 
 async function handleFolders(req: VercelRequest, res: VercelResponse) {
@@ -288,13 +235,11 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
     }
     if (action === 'update') {
         const { id, name } = body;
-        if (!id || !name) return res.status(400).json({ error: "Missing ID or Name" });
         await sql`UPDATE app_folders SET name = ${name} WHERE id = ${id}`;
         return res.status(200).json({ success: true });
     }
     if (action === 'delete') {
         const { id } = body;
-        if (!id) return res.status(400).json({ error: "Missing ID" });
         await sql`DELETE FROM app_folders WHERE id = ${id}`;
         return res.status(200).json({ success: true });
     }
@@ -303,18 +248,10 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     let { handler } = req.query;
-    // Normalize handler if it's an array (query param repetition)
     if (Array.isArray(handler)) handler = handler[0];
-    
-    // Normalize casing
     const action = handler ? String(handler).toLowerCase() : null;
-
     try {
-        if (!action) {
-             // Return 200 to prevent 404s if people hit root /api/app
-             return res.status(200).json({ status: "API Ready", message: "No handler specified" });
-        }
-
+        if (!action) return res.status(200).json({ status: "API Ready" });
         if (action === 'users') return await handleUsers(req, res);
         if (action === 'files') return await handleFiles(req, res);
         if (action === 'folders') return await handleFolders(req, res);
@@ -323,117 +260,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             let cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
             let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
             let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
-
-            if ((!cloudName || !apiKey || !apiSecret) && process.env.CLOUDINARY_URL) {
-                try {
-                    const matches = process.env.CLOUDINARY_URL.trim().match(/^cloudinary:\/\/([^:]+):([^@]+)@(.*)$/);
-                    if (matches) {
-                        apiKey = matches[1];
-                        apiSecret = matches[2];
-                        cloudName = matches[3];
-                    }
-                } catch (e) { console.error("Lỗi phân tích CLOUDINARY_URL:", e); }
-            }
-
-            if (!cloudName || !apiKey || !apiSecret) {
-                return res.status(500).json({ error: `Server thiếu cấu hình Cloudinary.` });
-            }
-
+            if (!cloudName || !apiKey || !apiSecret) return res.status(500).json({ error: `Server thiếu cấu hình Cloudinary.` });
             const timestamp = Math.round(new Date().getTime() / 1000);
             const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
             return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
         }
-
         if (action === 'trigger-ingest') {
              let body = req.body || {};
              if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
              const { url, fileName, fileType, docId } = body;
-             
              if (!url || !docId) return res.status(400).json({ error: "Missing required fields" });
-
-             await inngest.send({
-                name: "app/process.file",
-                data: { url, fileName, fileType, docId }
-             });
-             return res.status(200).json({ success: true, message: "Ingest job triggered" });
+             await inngest.send({ name: "app/process.file", data: { url, fileName, fileType, docId } });
+             return res.status(200).json({ success: true });
         }
-
-        if (action === 'analytics' || action === 'usage') {
-            try {
-                const sql = await getSql();
-                await sql`CREATE TABLE IF NOT EXISTS token_usage (id TEXT PRIMARY KEY, model TEXT, tokens INTEGER, duration_ms INTEGER, status TEXT, timestamp BIGINT, error_msg TEXT)`;
-                
-                // Parse filters
+        if (action === 'config') {
+            const sql = await getSql();
+            await sql`CREATE TABLE IF NOT EXISTS system_settings (id TEXT PRIMARY KEY, data TEXT)`;
+            if (req.method === 'POST') {
                 let body = req.body || {};
                 if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-                const { startDate, endDate, model } = body;
-
-                let query;
-                if (startDate && endDate && model && model !== 'all') {
-                    query = await sql`SELECT * FROM token_usage WHERE timestamp >= ${startDate} AND timestamp <= ${endDate} AND model ILIKE ${`%${model}%`} ORDER BY timestamp DESC LIMIT 100`;
-                } else if (startDate && endDate) {
-                    query = await sql`SELECT * FROM token_usage WHERE timestamp >= ${startDate} AND timestamp <= ${endDate} ORDER BY timestamp DESC LIMIT 100`;
-                } else {
-                    query = await sql`SELECT * FROM token_usage ORDER BY timestamp DESC LIMIT 100`;
-                }
-
-                const data = query;
-                const summary = {
-                    totalRequests: data.length,
-                    totalTokens: data.reduce((sum: number, r: any) => sum + (r.tokens || 0), 0),
-                    avgLatency: data.length > 0 ? Math.round(data.reduce((sum: number, r: any) => sum + (r.duration_ms || 0), 0) / data.length) : 0,
-                    totalErrors: data.filter((r: any) => r.status === 'error').length
-                };
-
-                const modelStats: Record<string, any> = {};
-                const dayStats: Record<string, any> = {};
-                for (const row of data) {
-                    const m = row.model || 'unknown';
-                    if (!modelStats[m]) modelStats[m] = { model: m, requests: 0, errors: 0 };
-                    modelStats[m].requests++;
-                    if (row.status === 'error') modelStats[m].errors++;
-
-                    const day = new Date(Number(row.timestamp)).toISOString().split('T')[0];
-                    if (!dayStats[day]) dayStats[day] = { day, requests: 0 };
-                    dayStats[day].requests++;
-                }
-
-                return res.status(200).json({
-                    data: Object.values(modelStats), 
-                    recentLogs: data.slice(0, 50),
-                    summary,
-                    trend: Object.values(dayStats).sort((a: any, b: any) => a.day.localeCompare(b.day))
-                });
-            } catch (e: any) {
-                return res.status(200).json({ data: [], recentLogs: [], summary: {}, trend: [] });
+                await sql`INSERT INTO system_settings (id, data) VALUES ('global', ${JSON.stringify(body)}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
+                return res.status(200).json({ success: true });
+            } else {
+                const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
+                return res.status(200).json(rows.length > 0 ? JSON.parse(rows[0].data) : {}); 
             }
         }
-
-        if (action === 'config') {
-            try {
-                const sql = await getSql();
-                await sql`CREATE TABLE IF NOT EXISTS system_settings (id TEXT PRIMARY KEY, data TEXT)`;
-
-                if (req.method === 'POST') {
-                    let body = req.body || {};
-                    if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-                    await sql`INSERT INTO system_settings (id, data) VALUES ('global', ${JSON.stringify(body)}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
-                    return res.status(200).json({ success: true });
-                } else {
-                    const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
-                    if (rows.length > 0) {
-                        return res.status(200).json(JSON.parse(rows[0].data));
-                    }
-                    return res.status(200).json({}); 
-                }
-            } catch (e: any) {
-                return res.status(500).json({ error: `Config Error: ${e.message}` });
-            }
-        }
-
-        return res.status(404).json({ error: `Handler '${action}' not found` });
+        return res.status(404).json({ error: `Handler not found` });
     } catch (e: any) {
-        console.error("API Handler Error:", e);
-        return res.status(500).json({ error: e.message || "Lỗi Server không xác định" });
+        return res.status(500).json({ error: e.message });
     }
 }

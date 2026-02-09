@@ -18,6 +18,19 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string) {
     }
 }
 
+async function queryHuggingFace(prompt: string, model: string = "mistralai/Mistral-7B-Instruct-v0.2") {
+    const hfKey = process.env.HUGGING_FACE_API_KEY;
+    if (!hfKey) throw new Error("Missing HF Key");
+    
+    const response = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
+        headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": "application/json" },
+        method: "POST",
+        body: JSON.stringify({ inputs: prompt, parameters: { max_new_tokens: 1000, return_full_text: false } }),
+    });
+    const result = await response.json();
+    return result[0]?.generated_text || result.generated_text || "";
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
@@ -27,7 +40,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!lastMessage) return res.status(400).json({ error: "No messages" });
 
     const userQuery = lastMessage.content;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+    // DO fix: Use recommended initialization without fallback
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
     const databaseUrl = process.env.DATABASE_URL;
     const pineconeApiKey = process.env.PINECONE_API_KEY;
@@ -70,41 +84,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return text;
     })();
 
-    const systemInstruction = `Bạn là Trợ lý HR. Dựa trên dữ liệu: ${context || "Không có tài liệu."}. Trả lời chuyên nghiệp.`;
+    const systemInstruction = `Bạn là Trợ lý HR. Dựa trên dữ liệu: ${context || "Không có tài liệu."}. Trả lời bằng tiếng Việt chuyên nghiệp.`;
 
-    // 2. Generation with Failover
+    // 2. Generation with Triple Failover
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     
     try {
-      // Thử dùng Gemini trước
-      const chat = ai.chats.create({
+      // Ưu tiên 1: Gemini
+      // DO fix: generateContentStream returns a promise that resolves to an AsyncGenerator. Must await it before for-await-of loop.
+      const chat = await ai.models.generateContentStream({
         model: 'gemini-3-flash-preview',
-        config: { systemInstruction, temperature: 0.2 },
-        history: messages.slice(0, -1).map((m: any) => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }]
-        })),
+        contents: [
+            { role: 'user', parts: [{ text: systemInstruction }] },
+            ...messages.map((m: any) => ({
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: m.content }]
+            }))
+        ],
+        config: { temperature: 0.2 }
       });
-      const result = await chat.sendMessageStream({ message: userQuery });
-      for await (const chunk of result) {
+      for await (const chunk of chat) {
         if (chunk.text) res.write(chunk.text);
       }
     } catch (geminiError: any) {
       console.warn("Gemini Failed, switching to GROQ (Llama-3):", geminiError.message);
-      res.write("\n\n[INFO]: Gemini Overloaded. Switching to Llama-3 (Groq)...\n\n");
       
-      const groqResponse = await groq.chat.completions.create({
-        messages: [
-          { role: "system", content: systemInstruction },
-          ...messages.map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
-        ],
-        model: "llama-3.1-70b-versatile",
-        stream: true,
-      });
+      try {
+          // Ưu tiên 2: Groq (Llama-3)
+          res.write("\n\n[FAILOVER]: Gemini bận, đang dùng Llama-3...\n\n");
+          const groqResponse = await groq.chat.completions.create({
+            messages: [
+              { role: "system", content: systemInstruction },
+              ...messages.map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+            ],
+            model: "llama-3.1-70b-versatile",
+            stream: true,
+          });
 
-      for await (const chunk of groqResponse) {
-        const content = chunk.choices[0]?.delta?.content || "";
-        res.write(content);
+          for await (const chunk of groqResponse) {
+            const content = chunk.choices[0]?.delta?.content || "";
+            res.write(content);
+          }
+      } catch (groqError: any) {
+          // Ưu tiên 3: Hugging Face (Mistral)
+          console.warn("Groq Failed, switching to Hugging Face:", groqError.message);
+          res.write("\n\n[CRITICAL FAILOVER]: Đang sử dụng Hugging Face Engine...\n\n");
+          const hfPrompt = `<s>[INST] ${systemInstruction}\n\nUser Question: ${userQuery} [/INST]`;
+          const hfText = await queryHuggingFace(hfPrompt);
+          res.write(hfText);
       }
     }
     res.end();

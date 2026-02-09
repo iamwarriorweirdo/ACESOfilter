@@ -8,8 +8,10 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    // KHÔNG định nghĩa process.env.API_KEY ở đây vì sẽ làm lộ key ở client-side.
+    // Toàn bộ logic AI đã được chuyển xuống Serverless Functions (api/*.ts).
     define: {
-      'process.env.API_KEY': JSON.stringify(env.API_KEY),
+      'process.env.NODE_ENV': JSON.stringify(mode),
     },
     server: {
       proxy: {
