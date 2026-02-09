@@ -142,13 +142,13 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         }
 
         const doc = docs[0];
-        const fileUrl = doc.url || doc.content;
+        const fileUrl = (doc.url || doc.content) as string;
         const fileName = doc.name;
 
         console.log(`[DELETE] Starting deletion for: ${fileName} (ID: ${docId})`);
 
         // 2. Delete from Cloudinary (if file is hosted there)
-        if (fileUrl && fileUrl.includes('cloudinary.com')) {
+        if (fileUrl && typeof fileUrl === 'string' && fileUrl.includes('cloudinary.com')) {
             try {
                 const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
                 const apiKey = process.env.CLOUDINARY_API_KEY?.trim();
@@ -156,7 +156,7 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
 
                 if (cloudName && apiKey && apiSecret) {
                     const urlParts = fileUrl.split('/');
-                    const uploadIndex = urlParts.findIndex(p => p === 'upload');
+                    const uploadIndex = urlParts.findIndex((p: string) => p === 'upload');
                     if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
                         const publicIdWithExt = urlParts.slice(uploadIndex + 2).join('/');
                         const parts = publicIdWithExt.split('.');
@@ -173,7 +173,7 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         }
 
         // 3. Delete from Supabase (if file is hosted there)
-        if (fileUrl && fileUrl.includes('supabase.co')) {
+        if (fileUrl && typeof fileUrl === 'string' && fileUrl.includes('supabase.co')) {
             try {
                 const supabaseUrl = getSupabaseEnv('SUPABASE_URL', true) || process.env.SUPABASE_URL?.trim();
                 const supabaseKey = getSupabaseEnv('SUPABASE_SERVICE_ROLE_KEY') || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();

@@ -21,6 +21,6 @@
     },
     "types": ["node"]
   },
-  "include": ["**/*.ts", "**/*.tsx", "api/**/*.ts"],
+  "include": ["types.d.ts", "**/*.ts", "**/*.tsx", "api/**/*.ts"],
   "exclude": ["node_modules"]
 }

@@ -47,7 +47,6 @@ async function logUsage(model: string, tokens: number, duration: number, status:
     await sql`INSERT INTO token_usage (id, model, tokens, duration_ms, status, timestamp, error_msg) 
               VALUES (${Math.random().toString(36).substring(2, 10)}, ${model}, ${tokens}, ${duration}, ${status}, ${Date.now()}, ${errorMsg || null})`;
   } catch (e) {
-    // Silently log to console, don't crash the background job for logging errors
     console.error("Log Usage Database Error:", e);
   }
 }
@@ -74,14 +73,15 @@ async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer
 
   try {
     // @ts-ignore
+    const adobeSdk = await import('@adobe/pdfservices-node-sdk');
     const {
       ServicePrincipalCredentials,
       ExecutionContext,
       CompressPDF,
-      PDFServices,
-      SDKError,
-      ServiceUsageError
-    } = await import('@adobe/pdfservices-node-sdk');
+      PDFServices
+    } = adobeSdk;
+    
+    // @ts-ignore
     const { Readable } = await import('stream');
 
     console.log("[Adobe] Starting PDF compression...");
@@ -92,7 +92,6 @@ async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer
       organizationId: config.adobeOrgId || undefined
     });
 
-    const executionContext = ExecutionContext.create(credentials);
     const pdfServices = new PDFServices({ credentials });
 
     const stream = Readable.from(buffer);
@@ -101,7 +100,6 @@ async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer
       mimeType: "application/pdf"
     });
 
-    // Create Operation - Level: MEDIUM is usually best balance
     const operation = new CompressPDF.Operation();
     const params = new CompressPDF.Params({
       compressionLevel: CompressPDF.CompressionLevel.MEDIUM
@@ -120,7 +118,6 @@ async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer
 
     const resultStream = await pdfServices.getContent({ asset: outputAsset });
 
-    // Convert stream back to buffer
     const chunks: any[] = [];
     for await (const chunk of resultStream) {
       chunks.push(chunk);
@@ -131,11 +128,11 @@ async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer
     return compressedBuffer;
   } catch (error: any) {
     console.error("[Adobe] Compression Failed:", error.message || error);
-    return buffer; // Fallback to original
+    return buffer; 
   }
 }
 
-// Helper: AI Robust Call with Fallback
+// Helper: AI Robust Call
 async function safeAiCall(ai: any, params: any, type: 'generate' | 'embed' = 'generate') {
   const start = Date.now();
   const model = params.model || 'unknown';
@@ -143,8 +140,6 @@ async function safeAiCall(ai: any, params: any, type: 'generate' | 'embed' = 'ge
     let result;
     if (type === 'generate') result = await ai.models.generateContent(params);
     else {
-      // For the modular @google/genai SDK, embedding usually expects 'contents' (plural)
-      // to avoid the "Value must be a list given an array path requests[]" error.
       const embedParams = { ...params };
       if ((embedParams as any).content && !(embedParams as any).contents) {
         (embedParams as any).contents = [(embedParams as any).content];
@@ -153,39 +148,13 @@ async function safeAiCall(ai: any, params: any, type: 'generate' | 'embed' = 'ge
       result = await ai.models.embedContent(embedParams);
     }
 
-    // Log success
     const duration = Date.now() - start;
     const tokens = type === 'generate' ? (result.usageMetadata?.totalTokenCount || result.response?.usageMetadata?.totalTokenCount || 0) : 0;
-    console.log(`[AI Success] Model: ${model}, Type: ${type}, Tokens: ${tokens}, Duration: ${duration}ms`);
     await logUsage(model, tokens, duration, 'success');
     return result;
   } catch (error: any) {
     const duration = Date.now() - start;
     await logUsage(model, 0, duration, 'error', error.message);
-
-    const msg = error.message?.toLowerCase() || "";
-    const isQuota = msg.includes('429') || msg.includes('quota') || msg.includes('limit');
-    const isNotFound = msg.includes('404') || msg.includes('not_found') || msg.includes('not found');
-
-    if (isQuota || isNotFound) {
-      console.warn(`[AI Fallback] ${isQuota ? 'Quota' : 'Model 404'} hit for ${params.model}. Switching to gemini-1.5-flash-latest.`);
-      const { ...paramsWithoutModel } = params;
-
-      let fallbackParams = {
-        ...paramsWithoutModel,
-        model: type === 'generate' ? 'gemini-1.5-flash-latest' : 'text-embedding-004'
-      };
-
-      if (type === 'embed') {
-        if ((fallbackParams as any).content && !(fallbackParams as any).contents) {
-          (fallbackParams as any).contents = [(fallbackParams as any).content];
-          delete (fallbackParams as any).content;
-        }
-      }
-
-      if (type === 'generate') return await ai.models.generateContent(fallbackParams);
-      return await ai.models.embedContent(fallbackParams);
-    }
     throw error;
   }
 }
@@ -197,18 +166,17 @@ async function extractPdfWithAdobe(buffer: Buffer, config: any): Promise<{ text:
 
   try {
     // @ts-ignore
-    const {
-      ServicePrincipalCredentials,
-      ExecutionContext,
-      PDFServices,
-      PDFExtract,
-      SDKError
-    } = await import('@adobe/pdfservices-node-sdk');
+    const adobeSdk = await import('@adobe/pdfservices-node-sdk');
+    const { ServicePrincipalCredentials, PDFServices, PDFExtract } = adobeSdk;
+    
+    // @ts-ignore
     const { Readable } = await import('stream');
+    // @ts-ignore
     const fs = await import('fs');
+    // @ts-ignore
     const path = await import('path');
+    // @ts-ignore
     const os = await import('os');
-    const { exec } = await import('child_process');
 
     console.log("[Adobe] Starting PDF Deep Extract...");
 
@@ -225,7 +193,6 @@ async function extractPdfWithAdobe(buffer: Buffer, config: any): Promise<{ text:
       mimeType: "application/pdf"
     });
 
-    // Create Operation - Extracting Text and Tables
     const params = new PDFExtract.Params({
       getCharInfo: false,
       elementsToExtract: [PDFExtract.ElementType.TEXT, PDFExtract.ElementType.TABLES]
@@ -244,7 +211,6 @@ async function extractPdfWithAdobe(buffer: Buffer, config: any): Promise<{ text:
 
     const resultStream = await pdfServices.getContent({ asset: outputAsset });
 
-    // Adobe Extract returns a ZIP. We need to parse structuredData.json inside.
     const tempDir = path.join(os.tmpdir(), `adobe-${Date.now()}`);
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
     const zipPath = path.join(tempDir, "output.zip");
@@ -257,7 +223,7 @@ async function extractPdfWithAdobe(buffer: Buffer, config: any): Promise<{ text:
     });
 
     // @ts-ignore
-    const AdmZip = await import('adm-zip').then(m => m.default).catch(() => null);
+    const AdmZip = await import('adm-zip').then(m => m.default || m).catch(() => null);
     if (!AdmZip) {
       console.warn("[Adobe] adm-zip not found, returning placeholder text.");
       return { text: "ZIP extraction failed - missing adm-zip dependency." };
@@ -275,16 +241,13 @@ async function extractPdfWithAdobe(buffer: Buffer, config: any): Promise<{ text:
     }
 
     if (jsonData && jsonData.elements) {
-      // Reconstruct text from elements with some structure
       extractedText = jsonData.elements
         .filter((e: any) => e.Text)
         .map((e: any) => e.Text)
         .join("\n");
-
       console.log(`[Adobe] Deep Extract success. Extracted ${extractedText.length} characters.`);
     }
 
-    // Cleanup
     try { fs.unlinkSync(zipPath); fs.rmdirSync(tempDir); } catch (e) { }
 
     return { text: extractedText, structuredData: jsonData };
@@ -325,7 +288,7 @@ const processFileInBackground = inngest.createFunction(
       const ocrModel = systemConfig?.ocrModel || 'gemini-3-flash-preview';
       const analysisModel = systemConfig?.analysisModel || 'gemini-3-flash-preview';
 
-      // --- STEP 2: DOWNLOAD & INITIAL PARSE ---
+      // --- STEP 2: DOWNLOAD & PARSE ---
       const parseResult = await step.run("download-and-parse", async () => {
         await updateDbStatus(docId, "Scanning");
         const arrayBuffer = await fetchFileBuffer(url);
@@ -353,7 +316,6 @@ const processFileInBackground = inngest.createFunction(
             if (!extractedText || extractedText.trim().length < 50) needsAiVision = true;
           } catch (e) { needsAiVision = true; }
         } else if (fileType.includes('pdf') || lowFileName.endsWith('.pdf')) {
-          // Attempt Adobe Extract
           if (systemConfig?.enableAdobeCompression) {
             try {
               await updateDbStatus(docId, "Deep Extracting (Adobe)");
@@ -364,7 +326,6 @@ const processFileInBackground = inngest.createFunction(
               }
             } catch (e) { }
           }
-          // Fallback to pdf-parse
           if (!extractedText) {
             try {
               // @ts-ignore
@@ -387,17 +348,15 @@ const processFileInBackground = inngest.createFunction(
           extractedText,
           parseMethod,
           needsAiVision,
-          // Optimization: If small, keep buffer in memory to avoid re-downloading
           fileBase64: (needsAiVision && fileBuffer.length < 3.8 * 1024 * 1024) ? fileBuffer.toString('base64') : null
         };
       });
 
-      // --- STEP 3: RECOVERY & REFINEMENT (MARKDOWN) ---
+      // --- STEP 3: RECOVERY & REFINEMENT ---
       const finalResult = await step.run("ocr-recovery-and-markdown", async () => {
         let text = parseResult.extractedText;
         let method = parseResult.parseMethod;
 
-        // A. Vision Recovery
         if (parseResult.needsAiVision) {
           await updateDbStatus(docId, "AI Vision Scan");
           let base64 = parseResult.fileBase64;
@@ -414,27 +373,13 @@ const processFileInBackground = inngest.createFunction(
               role: 'user',
               parts: [
                 { inlineData: { data: base64, mimeType: mime } },
-                { text: "OCR Task: Extract ALL text from this document accurately. Use Markdown for structure. Do NOT summarize." }
+                { text: "OCR Task: Extract ALL text from this document accurately. Use Markdown." }
               ]
             }]
           });
           text = visionRes.response?.text() || visionRes.text || "";
           method = `vision-${ocrModel}`;
         }
-
-        // B. Markdown Refinement (The Goal)
-        if (text && text.length > 20) {
-          await updateDbStatus(docId, "Structuring Content");
-          const refineRes = await safeAiCall(ai, {
-            model: 'gemini-1.5-flash-latest',
-            contents: [{
-              role: 'user',
-              parts: [{ text: `Task: Convert the following raw OCR/extraction into clean, professional Markdown.\n1. Preserve ALL data and Vietnamese fonts.\n2. Structure tables correctly.\n3. Use headers and lists for hierarchy.\n\nRAW TEXT:\n${text.substring(0, 30000)}` }]
-            }]
-          });
-          text = refineRes.response?.text() || text;
-        }
-
         return { text, method };
       });
 
@@ -477,7 +422,6 @@ const processFileInBackground = inngest.createFunction(
 
         await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
 
-        // Create embedding
         const embText = `File: ${fileName}\nTitle: ${fullMetadata.title}\nSummary: ${fullMetadata.summary}\nContent: ${extractedContent.substring(0, 2000)}`;
         const embRes = await safeAiCall(ai, {
           model: 'text-embedding-004',
@@ -499,11 +443,9 @@ const processFileInBackground = inngest.createFunction(
       });
 
       await updateDbStatus(docId, "Thành công (Indexed)");
-      console.log(`[Inngest] Process complete for ${fileName}`);
-
     } catch (error: any) {
       await updateDbStatus(docId, `${error.message || "Unknown System Error"}`, true);
-      throw error; // Rethrow to show failure in Inngest Dashboard
+      throw error;
     }
   }
 );
