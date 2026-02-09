@@ -1,3 +1,4 @@
+
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -490,7 +491,7 @@ const processFileInBackground = inngest.createFunction(
             id: docId,
             values: vector,
             metadata: { filename: fileName, text: embText.substring(0, 5000) }
-          }]);
+          }] as any);
         }
       });
 

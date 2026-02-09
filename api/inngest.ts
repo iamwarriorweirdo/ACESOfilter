@@ -1,3 +1,4 @@
+
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -405,7 +406,7 @@ const processFileInBackground = inngest.createFunction(
             filename: fileName,
             docId: docId
           }
-        }]);
+        }] as any);
       });
 
       return { success: true, method: finalMethod };

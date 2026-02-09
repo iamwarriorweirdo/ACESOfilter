@@ -5,9 +5,10 @@ import { TRANSLATIONS } from '../constants';
 import { Server, Activity, Database, Cpu, Save, AlertTriangle, Cloud, HardDrive, Settings, Zap, Users, Scale, Loader2, Globe, Layers, DownloadCloud, History, ShieldCheck, CheckCircle2, BarChart3, PieChart, TrendingUp, RefreshCcw, BrainCircuit, Calendar, Filter, AlertCircle, Bot, Sparkles, Clock, XCircle, CheckCircle } from 'lucide-react';
 import UserManagementDialog from './UserManagementDialog';
 
+// Define the missing SystemAdminViewProps interface
 interface SystemAdminViewProps {
     config: SystemConfig;
-    setConfig: (config: SystemConfig) => void | Promise<void>;
+    setConfig: (config: SystemConfig) => Promise<void> | void;
     documents: Document[];
     language: Language;
     currentUsername: string;
@@ -50,6 +51,7 @@ const SimpleLineChart = ({ data }: { data: any[] }) => {
     );
 };
 
+// Fix error in file components/SystemAdminView.tsx on line 44: Cannot find name 'SystemAdminViewProps'.
 const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, documents, language, currentUsername, isEmbedded = false }) => {
     const t = (TRANSLATIONS as any)[language] || TRANSLATIONS.en;
     const [localConfig, setLocalConfig] = useState<SystemConfig>(config);
@@ -58,6 +60,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
     const [isBackingUp, setIsBackingUp] = useState(false);
     const [isCheckingIntegrity, setIsCheckingIntegrity] = useState(false);
     const [isSyncingAI, setIsSyncingAI] = useState(false);
+    const [isInitializingMemory, setIsInitializingMemory] = useState(false);
     const [syncProgress, setSyncProgress] = useState(0);
     const [isUserMgmtOpen, setIsUserMgmtOpen] = useState(false);
     const [systemHealth, setSystemHealth] = useState<string>('Checking...');
@@ -116,7 +119,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
 
             if (res.ok) {
                 const data = await res.json();
-                // Use trend for chart, data for table
                 setAnalyticsData(data.trend || data.data || []);
                 setRecentLogs(data.recentLogs || []);
                 setAnalyticsSummary(data.summary || {});
@@ -143,6 +145,27 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
             alert("Lỗi lưu cấu hình.");
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const handleInitMemory = async () => {
+        setIsInitializingMemory(true);
+        try {
+            const res = await fetch('/api/memory', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'init' })
+            });
+            const data = await res.json();
+            if (data.status === 'success' || data.status === 'exists') {
+                alert(data.message || "Neural Memory đã sẵn sàng.");
+            } else {
+                alert(`Lỗi: ${data.message}`);
+            }
+        } catch (e) {
+            alert("Lỗi kết nối tới AI Memory Service.");
+        } finally {
+            setIsInitializingMemory(false);
         }
     };
 
@@ -232,7 +255,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                     </div>
                 )}
 
-                {/* STATUS CARDS */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <StatusCard icon={<Activity className="text-green-500" />} label={t.systemHealth} value={systemHealth} sub="All systems operational" borderColor="border-green-500/20" />
                     <StatusCard icon={<TrendingUp className="text-blue-500" />} label={t.requestsToday || "Requests Today"} value={analyticsSummary.totalRequests || "0"} sub={t.estRpd || "Est. RPD"} borderColor="border-blue-500/20" />
@@ -242,7 +264,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <div className="space-y-6">
-                        {/* SYSTEM CONFIG CARD */}
                         <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
                             <div className="flex items-center gap-3 mb-6">
                                 <Settings className="text-primary" />
@@ -261,7 +282,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             <option value="gemini-2.5-flash">🚀 Gemini 2.5 Flash</option>
                                             <option value="gemini-1.5-flash">📦 Gemini 1.5 Flash (Fallback)</option>
                                         </select>
-                                        <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">Sử dụng cho nhiệm vụ quét tài liệu, hình ảnh và PDF phức tạp.</p>
                                     </div>
 
                                     <div className="p-4 bg-muted/20 rounded-lg border border-border">
@@ -274,21 +294,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             <option value="gemini-3-flash">⚡ Gemini 3.0 Flash</option>
                                             <option value="gemini-1.5-pro">💎 Gemini 1.5 Pro (Precision)</option>
                                         </select>
-                                        <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">Trích xuất Metadata, tóm tắt và phân tích cấu trúc JSON.</p>
-                                    </div>
-
-                                    <div className="p-4 bg-muted/20 rounded-lg border border-border">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <label className="block text-xs font-bold text-muted-foreground uppercase">💬 Chat Engine (RAG)</label>
-                                            <span className="text-[10px] bg-purple-500/10 text-purple-500 px-1.5 py-0.5 rounded border border-purple-500/20 font-bold">High RPM</span>
-                                        </div>
-                                        <select value={localConfig.chatModel || localConfig.aiModel} onChange={(e) => handleConfigChange('chatModel', e.target.value)} className="w-full bg-background border border-border rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-primary outline-none cursor-pointer">
-                                            <option value="gemini-2.5-flash-lite">🏎️ Gemini 2.5 Flash Lite (Fastest)</option>
-                                            <option value="gemini-2.5-flash">🚀 Gemini 2.5 Flash</option>
-                                            <option value="gemini-2.0-flash-lite">⚡ Gemini 2.0 Flash Lite</option>
-                                            <option value="llama-3.3-70b">🦙 Llama 3.3 70B (Groq)</option>
-                                        </select>
-                                        <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">Tối ưu cho tốc độ phản hồi Chat và chịu tải truy vấn lớn.</p>
                                     </div>
                                 </div>
                                 <div className="p-4 bg-muted/20 rounded-lg border border-border">
@@ -303,61 +308,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                         </div>
                                     </div>
                                 </div>
-
-                                {/* Adobe PDF Services Section */}
-                                <div className="p-4 border border-blue-500/20 bg-blue-500/5 rounded-lg space-y-4">
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <Zap className="text-blue-500" size={18} />
-                                            <span className="text-xs font-bold text-muted-foreground uppercase">Adobe PDF Optimization</span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-[10px] text-muted-foreground">{localConfig.enableAdobeCompression ? 'Enabled' : 'Disabled'}</span>
-                                            <button
-                                                onClick={() => handleConfigChange('enableAdobeCompression', !localConfig.enableAdobeCompression)}
-                                                className={`w-10 h-5 rounded-full p-1 transition-colors ${localConfig.enableAdobeCompression ? 'bg-blue-600' : 'bg-muted-foreground/30'}`}
-                                            >
-                                                <div className={`w-3 h-3 bg-white rounded-full transition-transform ${localConfig.enableAdobeCompression ? 'translate-x-5' : 'translate-x-0'}`} />
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {localConfig.enableAdobeCompression && (
-                                        <div className="grid grid-cols-1 gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
-                                            <div className="space-y-1.5">
-                                                <label className="text-[10px] font-bold text-muted-foreground ml-1">ADOBE CLIENT ID</label>
-                                                <input
-                                                    type="text"
-                                                    value={localConfig.adobeClientId || ''}
-                                                    onChange={(e) => handleConfigChange('adobeClientId', e.target.value)}
-                                                    placeholder="Client ID from Adobe Developer Console"
-                                                    className="w-full bg-background/50 border border-border rounded-lg p-2 text-xs font-mono"
-                                                />
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                <label className="text-[10px] font-bold text-muted-foreground ml-1">ADOBE CLIENT SECRET</label>
-                                                <input
-                                                    type="password"
-                                                    value={localConfig.adobeClientSecret || ''}
-                                                    onChange={(e) => handleConfigChange('adobeClientSecret', e.target.value)}
-                                                    placeholder="Client Secret"
-                                                    className="w-full bg-background/50 border border-border rounded-lg p-2 text-xs font-mono"
-                                                />
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                <label className="text-[10px] font-bold text-muted-foreground ml-1">ORGANIZATION ID</label>
-                                                <input
-                                                    type="text"
-                                                    value={localConfig.adobeOrgId || ''}
-                                                    onChange={(e) => handleConfigChange('adobeOrgId', e.target.value)}
-                                                    placeholder="Adobe Org ID (optional for some plans)"
-                                                    className="w-full bg-background/50 border border-border rounded-lg p-2 text-xs font-mono"
-                                                />
-                                            </div>
-                                            <p className="text-[9px] text-muted-foreground italic">Nén dữ liệu xuống độ phân giải trung bình để tăng 50% tốc độ quét OCR.</p>
-                                        </div>
-                                    )}
-                                </div>
                             </div>
                             <div className="mt-8 flex justify-end">
                                 <button onClick={saveConfig} disabled={!hasChanges || isSaving} className={`flex items-center gap-2 px-6 py-3 rounded-lg font-bold transition-all ${hasChanges ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-muted text-muted-foreground cursor-not-allowed'}`}>
@@ -366,15 +316,11 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             </div>
                         </div>
 
-                        {/* DB MANAGEMENT */}
                         <div className="border border-indigo-500/30 bg-indigo-500/5 rounded-xl p-6 flex flex-col">
                             <div className="flex items-center justify-between mb-6">
                                 <div className="flex items-center gap-2 text-indigo-500">
                                     <ShieldCheck size={24} />
                                     <h3 className="font-bold text-xl">{t.dbManagement}</h3>
-                                </div>
-                                <div className="flex items-center gap-1.5 px-3 py-1 bg-green-500/10 text-green-500 rounded-full border border-green-500/20 text-[10px] font-bold uppercase tracking-wider">
-                                    <CheckCircle2 size={12} /> Sync Active
                                 </div>
                             </div>
 
@@ -395,22 +341,30 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                 </div>
                             </div>
 
-                            <div className="space-y-4 mt-auto">
+                            <div className="space-y-4">
+                                <button
+                                    onClick={handleInitMemory}
+                                    disabled={isInitializingMemory}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50"
+                                >
+                                    {isInitializingMemory ? (
+                                        <Loader2 className="animate-spin" size={18} />
+                                    ) : (
+                                        <BrainCircuit size={18} />
+                                    )}
+                                    Khởi tạo AI Brain (Neural Memory)
+                                </button>
+                                
                                 <button
                                     onClick={handleReIndexAI}
                                     disabled={isSyncingAI}
                                     className="w-full flex items-center justify-center gap-2 px-4 py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl text-sm font-bold hover:opacity-90 transition-all shadow-lg shadow-purple-500/20 disabled:opacity-50 relative overflow-hidden"
                                 >
                                     {isSyncingAI ? (
-                                        <>
-                                            <div className="absolute inset-0 bg-black/10 flex items-center justify-start">
-                                                <div className="h-full bg-white/20 transition-all duration-300" style={{ width: `${syncProgress}%` }} />
-                                            </div>
-                                            <div className="relative z-10 flex items-center gap-2">
-                                                <Loader2 className="animate-spin" size={18} />
-                                                Syncing AI ({syncProgress}%)...
-                                            </div>
-                                        </>
+                                        <div className="relative z-10 flex items-center gap-2">
+                                            <Loader2 className="animate-spin" size={18} />
+                                            Syncing AI ({syncProgress}%)...
+                                        </div>
                                     ) : (
                                         <>
                                             <BrainCircuit size={18} />
@@ -422,7 +376,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                         </div>
                     </div>
 
-                    {/* ANALYTICS SECTION */}
                     <div className="bg-card border border-border rounded-xl p-6 shadow-sm flex flex-col min-h-[600px]">
                         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-4">
                             <div className="flex items-center gap-3">
@@ -430,43 +383,10 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                 <h3 className="text-xl font-bold">{t.analyticsTitle || "AI Analytics"}</h3>
                             </div>
 
-                            {/* Filters */}
                             <div className="flex items-center gap-2 p-1 bg-muted rounded-lg">
-                                <button
-                                    onClick={() => setActiveAnalyticsTab('overview')}
-                                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeAnalyticsTab === 'overview' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                                >
-                                    Overview
-                                </button>
-                                <button
-                                    onClick={() => setActiveAnalyticsTab('logs')}
-                                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeAnalyticsTab === 'logs' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                                >
-                                    Recent Logs
-                                </button>
+                                <button onClick={() => setActiveAnalyticsTab('overview')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeAnalyticsTab === 'overview' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>Overview</button>
+                                <button onClick={() => setActiveAnalyticsTab('logs')} className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${activeAnalyticsTab === 'logs' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>Recent Logs</button>
                             </div>
-                        </div>
-
-                        <div className="flex flex-wrap gap-2 mb-6 p-2 bg-muted/30 rounded-lg border border-border">
-                            <div className="flex items-center gap-2 border-r border-border pr-2">
-                                <Filter size={14} className="text-muted-foreground" />
-                                <select value={filterModel} onChange={(e) => setFilterModel(e.target.value)} className="bg-transparent text-sm font-medium outline-none cursor-pointer">
-                                    <option value="all">{t.allModels || "All Models"}</option>
-                                    <option value="gemini">Gemini Series</option>
-                                    <option value="llama">Llama Series</option>
-                                </select>
-                            </div>
-                            <div className="flex items-center gap-2">
-                                <Calendar size={14} className="text-muted-foreground" />
-                                <select value={timeRange} onChange={(e) => setTimeRange(e.target.value as any)} className="bg-transparent text-sm font-medium outline-none cursor-pointer">
-                                    <option value="day">{t.today || "Today"}</option>
-                                    <option value="week">{t.week || "This Week"}</option>
-                                    <option value="month">{t.month || "This Month"}</option>
-                                </select>
-                            </div>
-                            <button onClick={fetchAnalytics} className="ml-auto p-1 hover:bg-muted rounded text-muted-foreground">
-                                <RefreshCcw size={14} className={isLoadingAnalytics ? "animate-spin" : ""} />
-                            </button>
                         </div>
 
                         {isLoadingAnalytics ? (
@@ -474,7 +394,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                         ) : (
                             activeAnalyticsTab === 'overview' ? (
                                 <div className="flex flex-col gap-6">
-                                    {/* Stats Grid */}
                                     <div className="grid grid-cols-4 gap-2 text-center">
                                         <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/20">
                                             <div className="text-[10px] text-muted-foreground uppercase">{t.requests}</div>
@@ -493,35 +412,9 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             <div className="text-lg font-bold text-red-500">{analyticsSummary.totalErrors || 0}</div>
                                         </div>
                                     </div>
-
-                                    {/* Chart Area */}
                                     <div className="border border-border rounded-lg p-4 bg-background/50 relative">
                                         <h4 className="text-xs font-bold text-muted-foreground uppercase mb-4">Request Volume Trend</h4>
                                         <SimpleLineChart data={analyticsData} />
-                                    </div>
-
-                                    {/* Breakdown Table */}
-                                    <div className="overflow-hidden border border-border rounded-lg">
-                                        <table className="w-full text-sm text-left">
-                                            <thead className="text-xs text-muted-foreground uppercase bg-muted/80">
-                                                <tr>
-                                                    <th className="px-4 py-3">{t.model}</th>
-                                                    <th className="px-4 py-3 text-right">Count</th>
-                                                    <th className="px-4 py-3 text-right">Errors</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-border">
-                                                {analyticsData.slice(0, 5).map((row, idx) => (
-                                                    <tr key={idx} className="hover:bg-muted/30">
-                                                        <td className="px-4 py-2 text-xs font-medium flex items-center gap-2">
-                                                            {getModelIcon(row.model)} {row.model}
-                                                        </td>
-                                                        <td className="px-4 py-2 text-right">{row.requests}</td>
-                                                        <td className={`px-4 py-2 text-right ${row.errors > 0 ? 'text-red-500 font-bold' : 'text-muted-foreground'}`}>{row.errors}</td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
                                     </div>
                                 </div>
                             ) : (
@@ -537,27 +430,17 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             </tr>
                                         </thead>
                                         <tbody className="divide-y divide-border font-mono">
-                                            {recentLogs.length === 0 ? (
-                                                <tr><td colSpan={5} className="p-8 text-center text-muted-foreground">No recent logs found.</td></tr>
-                                            ) : (
-                                                recentLogs.map((log) => (
-                                                    <tr key={log.id} className="hover:bg-muted/30">
-                                                        <td className="px-3 py-2 whitespace-nowrap">{new Date(log.timestamp).toLocaleTimeString()}</td>
-                                                        <td className="px-3 py-2 truncate max-w-[120px]" title={log.model}>{log.model.split('-')[0]}...</td>
-                                                        <td className="px-3 py-2 text-right">{log.tokens}</td>
-                                                        <td className="px-3 py-2 text-right">{log.duration_ms}ms</td>
-                                                        <td className="px-3 py-2 text-center">
-                                                            {log.status === 'success' ? (
-                                                                <CheckCircle size={14} className="text-green-500 inline" />
-                                                            ) : (
-                                                                <span title={log.error_msg}>
-                                                                    <XCircle size={14} className="text-red-500 inline" />
-                                                                </span>
-                                                            )}
-                                                        </td>
-                                                    </tr>
-                                                ))
-                                            )}
+                                            {recentLogs.map((log) => (
+                                                <tr key={log.id} className="hover:bg-muted/30">
+                                                    <td className="px-3 py-2 whitespace-nowrap">{new Date(log.timestamp).toLocaleTimeString()}</td>
+                                                    <td className="px-3 py-2 truncate max-w-[120px]">{log.model.split('-')[0]}...</td>
+                                                    <td className="px-3 py-2 text-right">{log.tokens}</td>
+                                                    <td className="px-3 py-2 text-right">{log.duration_ms}ms</td>
+                                                    <td className="px-3 py-2 text-center">
+                                                        {log.status === 'success' ? <CheckCircle size={14} className="text-green-500 inline" /> : <XCircle size={14} className="text-red-500 inline" />}
+                                                    </td>
+                                                </tr>
+                                            ))}
                                         </tbody>
                                     </table>
                                 </div>
