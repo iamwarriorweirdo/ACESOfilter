@@ -1,3 +1,4 @@
+
 import { neon } from '@neondatabase/serverless';
 import { v2 as cloudinary } from 'cloudinary';
 import { createClient } from '@supabase/supabase-js';
@@ -93,6 +94,8 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
 async function handleFiles(req: VercelRequest, res: VercelResponse) {
     const sql = await getSql();
     await sql`CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, name TEXT, type TEXT, content TEXT, url TEXT, size BIGINT, upload_date BIGINT, extracted_content TEXT, folder_id TEXT, uploaded_by TEXT)`;
+    // Auto-migration for missing 'status' column
+    try { await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`; } catch (e) { }
 
     const method = req.method?.toUpperCase();
     if (method === 'GET') {
@@ -106,7 +109,7 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
             size: Number(d.size),
             uploadDate: Number(d.upload_date),
             extractedContent: d.extracted_content || "",
-            status: d.extracted_content && d.extracted_content.startsWith('{') ? 'Thành công (Indexed)' : (d.extracted_content || "Đang chờ xử lý"),
+            status: d.status || (d.extracted_content && d.extracted_content.startsWith('{') ? 'Thành công (Indexed)' : (d.extracted_content || "Đang chờ xử lý")),
             folderId: d.folder_id || null,
             uploadedBy: d.uploaded_by || 'system'
         }));
@@ -121,13 +124,14 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
             return res.status(200).json({ success: true });
         }
         await sql`
-            INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content) 
-            VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}) 
+            INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
+            VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
             ON CONFLICT (id) DO UPDATE SET 
                 url = EXCLUDED.url, 
                 content = EXCLUDED.content,
                 extracted_content = EXCLUDED.extracted_content,
-                folder_id = EXCLUDED.folder_id
+                folder_id = EXCLUDED.folder_id,
+                status = EXCLUDED.status
         `;
         return res.status(200).json({ success: true });
     }

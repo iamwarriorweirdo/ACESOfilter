@@ -469,7 +469,18 @@ const processFileInBackground = inngest.createFunction(
 
         // Important: Overwrite the 'extracted_content' with the FINAL JSON. 
         // We set 'append=false' implicitly by just running this update.
-        await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
+        // Robust update with auto-migration fallback
+        try {
+            await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
+        } catch (err: any) {
+            if (err.message?.includes('column "status"')) {
+                console.warn("[Auto-Migration] 'status' column missing. Adding it now...");
+                await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`;
+                await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullMetadata)}, status = 'completed' WHERE id = ${docId}`;
+            } else {
+                throw err;
+            }
+        }
 
         const embText = `File: ${fileName}\nTitle: ${fullMetadata.title}\nSummary: ${fullMetadata.summary}\nContent: ${extractedContent.substring(0, 2000)}`;
         const embRes = await safeAiCall(ai, {
