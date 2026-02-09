@@ -42,7 +42,8 @@ async function retrieveContext(state: typeof AgentState.State) {
                 model: "text-embedding-004",
                 contents: [{ parts: [{ text: query }] }]
             });
-            const vector = result.embeddings?.[0]?.values || result.embedding?.values || [];
+            // FIX: Access 'embeddings' instead of 'embedding'
+            const vector = result.embeddings?.[0]?.values || [];
 
             const vRes = await index.query({ vector, topK: 2, includeMetadata: true });
             for (const match of vRes.matches) {

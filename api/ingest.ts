@@ -1,3 +1,4 @@
+
 // DO fix: use correct text access and Pinecone upsert format
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
@@ -432,19 +433,18 @@ const processFileInBackground = inngest.createFunction(
         } as any, 'embed');
 
         // DO fix: access embeddings properly
-        const vector = embRes.embeddings?.[0]?.values || embRes.embedding?.values || [];
+        // FIX: Access 'embeddings' instead of 'embedding'
+        const vector = embRes.embeddings?.[0]?.values || [];
 
         if (vector.length === 768 && process.env.PINECONE_API_KEY) {
           const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
           const index = pc.index(process.env.PINECONE_INDEX_NAME!);
-          // DO fix: Pinecone upsert format
-          await index.upsert({
-            records: [{
+          // DO fix: Pinecone upsert format - Pass array directly
+          await index.upsert([{
               id: docId,
               values: vector,
               metadata: { filename: fileName, text: embText.substring(0, 5000) }
-            }]
-          });
+            }] as any);
         }
       });
 

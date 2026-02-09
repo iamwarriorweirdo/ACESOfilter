@@ -1,3 +1,4 @@
+
 // DO fix: use ai.models.embedContent, text property, and correct Pinecone upsert format
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
@@ -124,19 +125,18 @@ const processFileInBackground = inngest.createFunction(
               model: "text-embedding-004",
               contents: [{ parts: [{ text: extraction.substring(0, 8000) }] }]
           });
-          const vectorValues: number[] = embRes.embeddings?.[0]?.values || embRes.embedding?.values || [];
+          // FIX: Access 'embeddings' instead of 'embedding'
+          const vectorValues: number[] = embRes.embeddings?.[0]?.values || [];
 
           if (process.env.PINECONE_API_KEY && vectorValues.length > 0) {
               const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
               const index = pc.index(process.env.PINECONE_INDEX_NAME!);
-              // DO fix: Pinecone upsert format
-              await index.upsert({
-                  records: [{
-                      id: docId,
-                      values: vectorValues,
-                      metadata: { filename: fileName, text: extraction.substring(0, 1000) }
-                  }]
-              });
+              // DO fix: Pinecone upsert format - Pass array directly
+              await index.upsert([{
+                  id: docId,
+                  values: vectorValues,
+                  metadata: { filename: fileName, text: extraction.substring(0, 1000) }
+              }] as any);
           }
       });
 

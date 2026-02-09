@@ -54,8 +54,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             model: "text-embedding-004",
             contents: [{ parts: [{ text: userQuery }] }]
           }); 
+          // FIX: Access 'embeddings' instead of 'embedding'
+          const vector = embedRes.embeddings?.[0]?.values || [];
+          
           const queryResponse = await index.query({
-            vector: embedRes.embeddings?.[0]?.values || embedRes.embedding?.values || [],
+            vector,
             topK: 2,
             includeMetadata: true
           });
