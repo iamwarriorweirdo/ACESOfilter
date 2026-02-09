@@ -33,6 +33,7 @@ async function logUsage(model: string, tokens: number, duration: number, status:
   const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
   if (!dbUrl) return;
   try {
+    // @ts-ignore
     const { neon } = await import('@neondatabase/serverless');
     const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
 
@@ -56,6 +57,7 @@ async function updateDbStatus(docId: string, status: string, isError = false) {
   const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
   if (!dbUrl) return;
   try {
+    // @ts-ignore
     const { neon } = await import('@neondatabase/serverless');
     const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
     const content = isError ? `ERROR_DETAILS: ${status}` : `Đang xử lý: ${status}...`;
@@ -71,6 +73,7 @@ async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer
   }
 
   try {
+    // @ts-ignore
     const {
       ServicePrincipalCredentials,
       ExecutionContext,
@@ -206,6 +209,7 @@ const processFileInBackground = inngest.createFunction(
         const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
         if (!dbUrl) return null;
         try {
+          // @ts-ignore
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
           const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
@@ -240,6 +244,7 @@ const processFileInBackground = inngest.createFunction(
 
         if (fileName.toLowerCase().endsWith('.docx')) {
           try {
+            // @ts-ignore
             const mammoth = await import('mammoth');
             const res = await mammoth.extractRawText({ buffer: fileBuffer });
             extractedText = res.value;
@@ -255,6 +260,7 @@ const processFileInBackground = inngest.createFunction(
           }
         } else if (fileType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf')) {
           try {
+            // @ts-ignore
             const pdfParse = (await import('pdf-parse')).default;
             const data = await pdfParse(fileBuffer);
             extractedText = data.text;
@@ -364,6 +370,7 @@ const processFileInBackground = inngest.createFunction(
         console.log(`[Inngest] Step: save-db for ${fileName}`);
         const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
         if (!dbUrl) throw new Error("Missing DATABASE_URL");
+        // @ts-ignore
         const { neon } = await import('@neondatabase/serverless');
         const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
         await sql`UPDATE documents SET extracted_content = ${metadata} WHERE id = ${docId}`;

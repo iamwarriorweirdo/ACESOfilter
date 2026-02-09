@@ -1,2 +1,2 @@
 
-neural-memory[all]
+# Removed neural-memory[all] to fix 300MB deployment limit
