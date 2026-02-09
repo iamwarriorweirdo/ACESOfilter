@@ -1,104 +1,101 @@
-
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// DO fix: use correct import and property based text access for @google/genai
+import { GoogleGenAI } from "@google/genai";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { Pinecone } from '@pinecone-database/pinecone';
 import { neon } from '@neondatabase/serverless';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { streamText } from 'ai';
-import { google } from '@ai-sdk/google';
 
+// Định nghĩa State cho Agent
 const AgentState = Annotation.Root({
   messages: Annotation<any[]>({ reducer: (x: any[], y: any[]) => x.concat(y), default: () => [] }),
   userQuery: Annotation<string>(),
   context: Annotation<string>({ reducer: (x: string, y: string) => x + "\n" + y, default: () => "" }),
-  memories: Annotation<string>({ reducer: (x: string, y: string) => x + "\n" + y, default: () => "" }),
-  decision: Annotation<string>(),
 });
 
-async function recallMemory(query: string, baseUrl: string): Promise<string> {
-  try {
-    const response = await fetch(`${baseUrl}/api/memory?action=recall&query=${encodeURIComponent(query)}`);
-    if (response.ok) {
-        const data = await response.json();
-        return data.answer || "";
-    }
-  } catch (e) {}
-  return "";
-}
-
-async function rememberConversation(conversation: string, baseUrl: string): Promise<any> {
-  try {
-    fetch(`${baseUrl}/api/memory`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'remember', text: conversation })
-    }).catch(() => {});
-  } catch (e) {}
-}
-
-async function searchKnowledgeBase(query: string): Promise<string> {
+async function retrieveContext(state: typeof AgentState.State) {
     const rawConnectionString = process.env.DATABASE_URL || '';
     const connectionString = rawConnectionString.replace('postgresql://', 'postgres://');
     let contextText = "";
+    const query = state.userQuery;
     
     try {
         const sql = neon(connectionString);
         const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
         const index = pc.index(process.env.PINECONE_INDEX_NAME!);
 
+        // Keyword Search
         const keywordMatches = await sql`
-            SELECT name, extracted_content 
-            FROM documents 
+            SELECT name, extracted_content FROM documents 
             WHERE name ILIKE ${'%' + query + '%'} OR extracted_content ILIKE ${'%' + query + '%'}
-            LIMIT 3
+            LIMIT 2
         `;
 
         for (const doc of keywordMatches) {
-            contextText += `[FILE]: ${doc.name}\n${doc.extracted_content?.substring(0, 2000)}\n---\n`;
+            contextText += `[FILE]: ${doc.name}\n${doc.extracted_content?.substring(0, 1500)}\n---\n`;
         }
 
-        if (contextText.length < 2000) {
-            const genAI = new GoogleGenerativeAI(process.env.API_KEY!);
-            const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
-            const result = await model.embedContent(query);
-            const vector = result.embedding.values;
+        // Semantic Search
+        if (contextText.length < 1000) {
+            // DO fix: use GoogleGenAI instead of GoogleGenerativeAI
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+            const result = await ai.models.embedContent({
+                model: "text-embedding-004",
+                contents: [{ parts: [{ text: query }] }]
+            });
+            const vector = result.embeddings?.[0]?.values || result.embedding?.values || [];
 
-            const vRes = await index.query({ vector, topK: 3, includeMetadata: true });
+            const vRes = await index.query({ vector, topK: 2, includeMetadata: true });
             for (const match of vRes.matches) {
-                contextText += `[SEMANTIC_FILE]: ${match.metadata?.filename}\n${match.metadata?.text}\n---\n`;
+                contextText += `[VECTOR MATCH]: ${match.metadata?.filename}\n${match.metadata?.text}\n---\n`;
             }
         }
-    } catch (e) {}
-    return contextText;
+    } catch (e) { console.error("Agent Retrieval Error", e); }
+
+    return { context: contextText };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+async function generateAnswer(state: typeof AgentState.State) {
+    // DO fix: use GoogleGenAI instead of GoogleGenerativeAI
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
+    const prompt = `Bạn là Trợ lý HR AI cấp cao. 
+    Dựa trên dữ liệu tài liệu sau:
+    ${state.context || "Không tìm thấy tài liệu liên quan trong hệ thống."}
+
+    Hãy trả lời câu hỏi của người dùng một cách chuyên nghiệp và chính xác nhất: ${state.userQuery}`;
+
+    // DO fix: use ai.models.generateContent and text property
+    const result = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt
+    });
+    return { messages: [{ role: "assistant", content: result.text }] };
+}
+
+// Xây dựng đồ thị workflow
+const workflow = new StateGraph(AgentState)
+    .addNode("retrieve", retrieveContext)
+    .addNode("respond", generateAnswer)
+    .addEdge(START, "retrieve")
+    .addEdge("retrieve", "respond")
+    .addEdge("respond", END);
+
+const app = workflow.compile();
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+    if (req.method !== 'POST') return res.status(405).end();
+    
     try {
         const { messages } = req.body;
-        const lastMessage = messages[messages.length - 1];
-        const userQuery = lastMessage.content;
-        const baseUrl = `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers['host']}`;
+        const lastUserMessage = messages[messages.length - 1].content;
 
-        // Agent logic: Parallel search
-        const [context, memories] = await Promise.all([
-            searchKnowledgeBase(userQuery),
-            recallMemory(userQuery, baseUrl)
-        ]);
-
-        const result = await streamText({
-            model: google('gemini-2.0-flash-exp'),
-            system: `Bạn là ACESOfilter. Sử dụng dữ liệu dưới đây:
-            KÝ ỨC (Hội thoại cũ): ${memories}
-            KIẾN THỨC (Tài liệu): ${context}`,
-            messages,
-            onFinish: async ({ text }) => {
-                await rememberConversation(`User: ${userQuery}\nAI: ${text}`, baseUrl);
-            },
+        const result = await app.invoke({
+            userQuery: lastUserMessage,
+            messages: messages
         });
 
-        return result.toTextStreamResponse();
+        const finalMsg = result.messages[result.messages.length - 1];
+        return res.status(200).json({ content: finalMsg.content });
     } catch (error: any) {
         return res.status(500).json({ error: error.message });
     }

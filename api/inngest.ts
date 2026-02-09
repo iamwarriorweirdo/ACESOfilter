@@ -1,3 +1,4 @@
+// DO fix: use ai.models.embedContent, text property, and correct Pinecone upsert format
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -35,45 +36,10 @@ async function updateDbStatus(docId: string, status: string, isError = false) {
   } catch (e) { console.error("DB Update Failed", e); }
 }
 
-async function compressPdfWithAdobe(buffer: Buffer, config: any): Promise<Buffer> {
-  if (!config.adobeClientId || !config.adobeClientSecret) return buffer;
-  try {
-    // @ts-ignore
-    const adobeSdk = await import('@adobe/pdfservices-node-sdk');
-    const { ServicePrincipalCredentials, PDFServices, CompressPDF, ExecutionContext } = adobeSdk;
-    // @ts-ignore
-    const { Readable } = await import('stream');
-
-    const credentials = new ServicePrincipalCredentials({
-      clientId: config.adobeClientId,
-      clientSecret: config.adobeClientSecret,
-      organizationId: config.adobeOrgId || undefined
-    });
-    const pdfServices = new PDFServices({ credentials });
-    const stream = Readable.from(buffer);
-    const inputAsset = await pdfServices.upload({ readStream: stream, mimeType: "application/pdf" });
-
-    const operation = new CompressPDF.Operation();
-    operation.setParams(new CompressPDF.Params({ compressionLevel: CompressPDF.CompressionLevel.MEDIUM }));
-
-    const pollingJob = await pdfServices.submit({ operation, inputAssets: [inputAsset] });
-    const outputAsset = await pdfServices.getJobResult({ pollingJob, assetType: "output" });
-    const resultStream = await pdfServices.getContent({ asset: outputAsset });
-
-    const chunks: any[] = [];
-    for await (const chunk of resultStream) chunks.push(chunk);
-    return Buffer.concat(chunks);
-  } catch (e) { return buffer; }
-}
-
 async function safeAiCall(ai: any, params: any) {
-  const start = Date.now();
   try {
      return await ai.models.generateContent(params);
   } catch (error: any) {
-    if (error.message?.includes('429') || error.message?.includes('404')) {
-       return await ai.models.generateContent({ ...params, model: 'gemini-1.5-flash-latest' });
-    }
     throw error;
   }
 }
@@ -82,8 +48,7 @@ const processFileInBackground = inngest.createFunction(
   {
     id: "process-file-background",
     concurrency: { limit: 2 },
-    retries: 3,
-    cancelOn: [{ event: "app/process.file", match: "data.docId" }]
+    retries: 3
   },
   { event: "app/process.file" },
   async ({ event, step }) => {
@@ -107,141 +72,77 @@ const processFileInBackground = inngest.createFunction(
       const ocrModel = systemConfig?.ocrModel || 'gemini-3-flash-preview';
       const analysisModel = systemConfig?.analysisModel || 'gemini-3-flash-preview';
 
-      const parseResult = await step.run("download-and-parse", async () => {
-        await updateDbStatus(docId, "Scanning");
-        const arrayBuffer = await fetchFileBuffer(url);
-        let fileBuffer: Buffer = Buffer.from(arrayBuffer as any);
-
-        if (systemConfig?.enableAdobeCompression && (fileType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf'))) {
-           fileBuffer = await compressPdfWithAdobe(fileBuffer, systemConfig);
-        }
-
-        let extractedText = "";
-        let parseMethod = "unknown";
-        let needsVision = false;
-
-        if (fileName.toLowerCase().endsWith('.docx')) {
-          try {
-            // @ts-ignore
-            const mammoth = await import('mammoth');
-            const res = await mammoth.extractRawText({ buffer: fileBuffer });
-            extractedText = res.value;
-            parseMethod = "mammoth";
-            if (!extractedText || extractedText.trim().length < 50) needsVision = true;
-          } catch (e) { needsVision = true; }
-        } else if (fileType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf')) {
-          try {
-            // @ts-ignore
-            const pdfParse = (await import('pdf-parse')).default;
-            const data = await pdfParse(fileBuffer);
-            extractedText = data.text;
-            parseMethod = "pdf-parse";
-            if (!extractedText || extractedText.trim().length < 100) needsVision = true;
-          } catch (e) { needsVision = true; }
-        } else if (fileName.endsWith('.txt')) {
-          extractedText = fileBuffer.toString('utf-8');
-          parseMethod = "raw-text";
-        } else {
-          needsVision = true;
-        }
-
-        return {
-          text: extractedText,
-          method: parseMethod,
-          needsVision: needsVision || (!extractedText || extractedText.trim().length < 20),
-          fileBase64: (needsVision || !extractedText) && fileBuffer.length < 3.8 * 1024 * 1024 ? fileBuffer.toString('base64') : null
-        };
-      });
-
-      let finalText = parseResult.text;
-      let finalMethod = parseResult.method;
-
-      if (parseResult.needsVision) {
-        const visionResult = await step.run("vision-ocr-recovery", async () => {
-          await updateDbStatus(docId, "AI Vision Scan");
-          let base64 = parseResult.fileBase64;
-          if (!base64) {
-            const ab = await fetchFileBuffer(url);
-            base64 = Buffer.from(ab).toString('base64');
-          }
-          const mime = (fileType.includes('pdf') || fileName.toLowerCase().endsWith('.pdf')) ? 'application/pdf' : 'image/png';
-          const result = await safeAiCall(ai, {
-            model: ocrModel,
-            contents: [{
-                role: 'user', parts: [
-                  { inlineData: { data: base64, mimeType: mime } },
-                  { text: "OCR Task: Extract ALL text." }
-                ]
-            }]
+      const extraction = await step.run("ocr-and-extract", async () => {
+          await updateDbStatus(docId, "Scanning & OCR");
+          const buffer = await fetchFileBuffer(url);
+          const base64 = Buffer.from(buffer).toString('base64');
+          
+          const mimeType = fileType || (fileName.endsWith('.pdf') ? 'application/pdf' : 'image/png');
+          
+          const res = await safeAiCall(ai, {
+              model: ocrModel,
+              contents: [{
+                  role: 'user',
+                  parts: [
+                      { inlineData: { data: base64, mimeType } },
+                      { text: "Hãy trích xuất toàn bộ văn bản từ tài liệu này một cách chính xác nhất. Nếu là bảng biểu hãy giữ định dạng markdown." }
+                  ]
+              }]
           });
-          return { text: result.response?.text() || result.text || "", method: "gemini-vision-3.0" };
-        });
-        finalText = visionResult.text;
-        finalMethod = visionResult.method;
-      }
-
-      const metadata = await step.run("extract-metadata", async () => {
-        await updateDbStatus(docId, "Finalizing Index");
-        const result = await safeAiCall(ai, {
-          model: analysisModel,
-          contents: [{
-            role: 'user', parts: [{
-              text: `Analyze this text (max 20k chars): "${finalText.substring(0, 20000)}..."\nReturn JSON Only: { "title": "...", "summary": "...", "key_information": ["..."], "full_text_content": "..." }`
-            }]
-          }],
-          config: { responseMimeType: 'application/json' }
-        });
-        return result.response?.text() || result.text || "";
+          
+          // DO fix: use text property instead of text() method
+          return res.text;
       });
 
-      await step.run("save-db", async () => {
-        const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
-        if (!dbUrl) throw new Error("Missing DATABASE_URL");
-        // @ts-ignore
-        const { neon } = await import('@neondatabase/serverless');
-        const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
-        await sql`UPDATE documents SET extracted_content = ${metadata} WHERE id = ${docId}`;
+      await step.run("finalize-metadata-and-vector", async () => {
+          await updateDbStatus(docId, "Indexing");
+          
+          // Phân tích metadata
+          const metaRes = await safeAiCall(ai, {
+              model: analysisModel,
+              contents: [{
+                  role: 'user',
+                  parts: [{ text: `Phân tích nội dung sau và trả về JSON: { "title": "...", "summary": "...", "key_information": [] }\n\nNỘI DUNG:\n${extraction.substring(0, 10000)}` }]
+              }],
+              config: { responseMimeType: 'application/json' }
+          });
+          
+          // DO fix: use text property
+          const meta = JSON.parse(metaRes.text || "{}");
+          const fullContent = { ...meta, full_text: extraction };
+
+          const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.SUPABASE_POSTGRES_URL;
+          // @ts-ignore
+          const { neon } = await import('@neondatabase/serverless');
+          const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
+          
+          await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullContent)} WHERE id = ${docId}`;
+
+          // DO fix: use ai.models.embedContent directly
+          // Tạo Embedding cho Pinecone
+          const embRes = await ai.models.embedContent({
+              model: "text-embedding-004",
+              contents: [{ parts: [{ text: extraction.substring(0, 8000) }] }]
+          });
+          const vectorValues: number[] = embRes.embeddings?.[0]?.values || embRes.embedding?.values || [];
+
+          if (process.env.PINECONE_API_KEY && vectorValues.length > 0) {
+              const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
+              const index = pc.index(process.env.PINECONE_INDEX_NAME!);
+              // DO fix: Pinecone upsert format
+              await index.upsert({
+                  records: [{
+                      id: docId,
+                      values: vectorValues,
+                      metadata: { filename: fileName, text: extraction.substring(0, 1000) }
+                  }]
+              });
+          }
       });
 
-      await step.run("index-vector", async () => {
-        if (!process.env.PINECONE_API_KEY || !process.env.PINECONE_INDEX_NAME) return;
-        await updateDbStatus(docId, "Indexing Vector");
-        const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-        const index = pc.index(process.env.PINECONE_INDEX_NAME);
-
-        let contentToEmbed = finalText;
-        try {
-          const json = JSON.parse(metadata);
-          contentToEmbed = `${json.title}\n${json.summary}\n${json.key_information?.join('\n')}`;
-        } catch (e) { }
-
-        // Embedding Call
-        let vector = [];
-        try {
-             const embResult = await ai.models.embedContent({
-                 model: 'text-embedding-004',
-                 contents: [{ parts: [{ text: contentToEmbed.substring(0, 9000) }] }],
-                 config: {
-                    outputDimensionality: 768
-                 }
-             });
-             const raw = embResult.embeddings?.[0]?.values || [];
-             vector = Array.isArray(raw) ? raw.slice(0, 768) : [];
-        } catch(e) {}
-
-        if (vector.length === 768) {
-            await index.upsert([{
-            id: docId,
-            values: vector,
-            metadata: { text: contentToEmbed.substring(0, 4000), filename: fileName, docId: docId }
-            }] as any);
-        }
-      });
-      return { success: true, method: finalMethod };
+      await updateDbStatus(docId, "Thành công (Indexed)");
     } catch (error: any) {
-      await step.run("report-error", async () => {
-        await updateDbStatus(docId, `${error.message || "Unknown System Error"}`, true);
-      });
+      await updateDbStatus(docId, error.message, true);
       throw error;
     }
   }

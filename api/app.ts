@@ -1,4 +1,3 @@
-
 import { neon } from '@neondatabase/serverless';
 import { v2 as cloudinary } from 'cloudinary';
 import { createClient } from '@supabase/supabase-js';
@@ -112,6 +111,7 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
     }
     if (method === 'POST') {
         let doc = req.body || {};
+        // Fix: Use 'doc' instead of undefined 'body' variable
         if (typeof doc === 'string') { try { doc = JSON.parse(doc); } catch (e) { } }
         if (doc.extractedContent && !doc.name) {
             await sql`UPDATE documents SET extracted_content = ${doc.extractedContent} WHERE id = ${doc.id}`;

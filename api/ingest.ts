@@ -1,4 +1,4 @@
-
+// DO fix: use correct text access and Pinecone upsert format
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -149,7 +149,7 @@ async function safeAiCall(ai: any, params: any, type: 'generate' | 'embed' = 'ge
     }
 
     const duration = Date.now() - start;
-    const tokens = type === 'generate' ? (result.usageMetadata?.totalTokenCount || result.response?.usageMetadata?.totalTokenCount || 0) : 0;
+    const tokens = type === 'generate' ? (result.usageMetadata?.totalTokenCount || 0) : 0;
     await logUsage(model, tokens, duration, 'success');
     return result;
   } catch (error: any) {
@@ -377,7 +377,8 @@ const processFileInBackground = inngest.createFunction(
               ]
             }]
           });
-          text = visionRes.response?.text() || visionRes.text || "";
+          // DO fix: access text as property
+          text = visionRes.text || "";
           method = `vision-${ocrModel}`;
         }
         return { text, method };
@@ -407,7 +408,8 @@ const processFileInBackground = inngest.createFunction(
           }],
           config: { responseMimeType: 'application/json' }
         });
-        const meta = JSON.parse(res.response?.text() || res.text || "{}");
+        // DO fix: access text as property
+        const meta = JSON.parse(res.text || "{}");
         const fullMetadata = {
           ...meta,
           full_text_content: extractedContent,
@@ -425,20 +427,24 @@ const processFileInBackground = inngest.createFunction(
         const embText = `File: ${fileName}\nTitle: ${fullMetadata.title}\nSummary: ${fullMetadata.summary}\nContent: ${extractedContent.substring(0, 2000)}`;
         const embRes = await safeAiCall(ai, {
           model: 'text-embedding-004',
-          content: { parts: [{ text: embText }] },
+          contents: [{ parts: [{ text: embText }] }],
           outputDimensionality: 768
         } as any, 'embed');
 
+        // DO fix: access embeddings properly
         const vector = embRes.embeddings?.[0]?.values || embRes.embedding?.values || [];
 
         if (vector.length === 768 && process.env.PINECONE_API_KEY) {
           const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
           const index = pc.index(process.env.PINECONE_INDEX_NAME!);
-          await index.upsert([{
-            id: docId,
-            values: vector,
-            metadata: { filename: fileName, text: embText.substring(0, 5000) }
-          }] as any);
+          // DO fix: Pinecone upsert format
+          await index.upsert({
+            records: [{
+              id: docId,
+              values: vector,
+              metadata: { filename: fileName, text: embText.substring(0, 5000) }
+            }]
+          });
         }
       });
 
