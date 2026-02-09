@@ -45,19 +45,21 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     const { action, username, password, role, createdBy } = body;
 
     if (action === 'login') {
-        // Lấy biến môi trường và cắt bỏ khoảng trắng thừa (nếu có)
-        const sysAdminUser = (process.env.ADMIN_USER || '').trim();
-        const sysAdminPass = (process.env.ADMIN_PASS || '').trim();
+        // Cập nhật: Hỗ trợ cả ADMIN_PASS và ADMIN_PASSWORD để tránh lỗi do đặt tên biến môi trường khác nhau
+        const sysAdminUser = (process.env.ADMIN_USER || process.env.ADMIN_USERNAME || '').trim();
+        const sysAdminPass = (process.env.ADMIN_PASS || process.env.ADMIN_PASSWORD || '').trim();
         
         // Lấy dữ liệu người dùng nhập và cắt bỏ khoảng trắng
         const inputUser = (username || '').trim();
         const inputPass = (password || '').trim();
 
         if (!sysAdminPass) {
-            console.error("CRITICAL: ADMIN_PASS environment variable is NOT SET.");
+            console.error("CRITICAL: ADMIN_PASSWORD environment variable is NOT SET.");
+            // Log để debug trên Vercel (Lưu ý: không log password ra console)
+            console.log("Current Env Vars keys:", Object.keys(process.env).filter(k => k.startsWith('ADMIN_')));
         } 
-        // So sánh chính xác (Case sensitive nhưng đã trim space)
-        else if (sysAdminUser && inputUser === sysAdminUser && inputPass === sysAdminPass) {
+        // So sánh: Username không phân biệt hoa thường, Password phân biệt hoa thường
+        else if (sysAdminUser && inputUser.toLowerCase() === sysAdminUser.toLowerCase() && inputPass === sysAdminPass) {
             return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
         }
         
@@ -67,6 +69,8 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
             const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
             if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
         } catch (e: any) {
+            // Nếu lỗi kết nối DB nhưng user nhập đúng admin pass thì vẫn cho vào (Fallback mode)
+            // Tuy nhiên logic trên đã return rồi, đây là trường hợp user thường.
             return res.status(500).json({ error: `Lỗi Database: ${e.message}` });
         }
         return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu." });
