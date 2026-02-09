@@ -11,9 +11,10 @@ export const inngest = new Inngest({ id: "hr-rag-app" });
 
 async function fetchFileBuffer(url: string) {
   const headers = { 'User-Agent': 'Mozilla/5.0' };
-  let targetUrl = url.replace('http://', 'https://');
-  let res = await fetch(targetUrl, { headers });
-  if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+  // Đảm bảo URL luôn là https và không có khoảng trắng thừa
+  let targetUrl = url.replace('http://', 'https://').trim();
+  const res = await fetch(targetUrl, { headers });
+  if (!res.ok) throw new Error(`Không thể tải tệp từ Cloudinary/Storage (Mã lỗi: ${res.status})`);
   return await res.arrayBuffer();
 }
 
@@ -36,13 +37,27 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
   } catch (e) { }
 }
 
-async function extractDocxRawText(buffer: Buffer): Promise<string> {
+/**
+ * Bộ trích xuất "cứu cánh" dùng JSZip để đọc trực tiếp XML của Word
+ */
+async function extractDocxRawTextFallback(buffer: Buffer): Promise<string> {
   try {
     const zip = await JSZip.loadAsync(buffer);
     const docXml = await zip.file("word/document.xml")?.async("string");
     if (!docXml) return "";
-    return (docXml.match(/<w:t[^>]*>(.*?)<\/w:t>/g) || []).map(val => val.replace(/<[^>]+>/g, '')).join(' ');
-  } catch (e) { return ""; }
+
+    // Xóa bỏ tất cả các thẻ XML, chỉ giữ lại nội dung bên trong <w:t>
+    // Regex này mạnh hơn: lấy nội dung giữa các thẻ <w:t>...</w:t>
+    const textMatches = docXml.match(/<w:t[^>]*>(.*?)<\/w:t>/g);
+    if (!textMatches) return "";
+
+    return textMatches
+      .map(val => val.replace(/<[^>]+>/g, '')) // Xóa thẻ
+      .map(val => val.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')) // Decode entities
+      .join(' ');
+  } catch (e) { 
+    return ""; 
+  }
 }
 
 const processFileInBackground = inngest.createFunction(
@@ -54,7 +69,7 @@ const processFileInBackground = inngest.createFunction(
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
     try {
-      // --- BƯỚC 1: TRÍCH XUẤT VĂN BẢN THÔ (Dùng thư viện nội bộ, không tốn AI Quota) ---
+      // --- BƯỚC 1: TRÍCH XUẤT VĂN BẢN THÔ ---
       const parseResult = await step.run("extract-text", async () => {
         await updateDbStatus(docId, `Bắt đầu xử lý tệp: ${fileName}`);
         const ab = await fetchFileBuffer(url);
@@ -69,67 +84,73 @@ const processFileInBackground = inngest.createFunction(
           text = buffer.toString('utf-8');
           method = "text-plain-reader";
         } else if (lowName.endsWith('.docx')) {
-          await updateDbStatus(docId, "Đang trích xuất Word/WPS (Mammoth)...");
-          // @ts-ignore
-          const mammoth = await import('mammoth');
+          await updateDbStatus(docId, "Đang trích xuất bằng Mammoth...");
+          
           try {
-            const mamRes = await mammoth.extractRawText({ buffer });
-            text = mamRes.value;
+            // @ts-ignore
+            const mammoth = await import('mammoth');
+            // Xử lý import mammoth trong môi trường Vercel (đôi khi nằm trong .default)
+            const extractor = mammoth.default || mammoth;
+            const mamRes = await extractor.extractRawText({ buffer });
+            text = mamRes.value || "";
             method = "docx-mammoth";
-          } catch (e) { }
+            
+            if (mamRes.messages && mamRes.messages.length > 0) {
+                console.warn("Mammoth warnings:", mamRes.messages);
+            }
+          } catch (e: any) {
+            await updateDbStatus(docId, `Mammoth bị lỗi hệ thống: ${e.message}. Chuyển sang JSZip...`);
+          }
 
-          if (!text || text.trim().length < 10) {
-            await updateDbStatus(docId, "Mammoth thất bại, dùng bộ giải mã JSZip XML...");
-            text = await extractDocxRawText(buffer);
+          // Kiểm tra nếu Mammoth không lấy được chữ nào
+          if (!text || text.trim().length < 5) {
+            await updateDbStatus(docId, "Mammoth không tìm thấy văn bản. Đang thử giải mã cấu trúc XML trực tiếp...");
+            text = await extractDocxRawTextFallback(buffer);
             method = "docx-jszip-xml";
           }
         } else if (lowName.endsWith('.pdf')) {
           await updateDbStatus(docId, "Đang phân tích cấu trúc PDF...");
-          // @ts-ignore
-          const pdfParse = await import('pdf-parse');
-          const data = await pdfParse.default(buffer);
-          text = data.text;
-          method = "pdf-parse";
+          try {
+            // @ts-ignore
+            const pdfParse = await import('pdf-parse');
+            const pdfExtractor = pdfParse.default || pdfParse;
+            const data = await pdfExtractor(buffer);
+            text = data.text;
+            method = "pdf-parse";
+          } catch (e: any) {
+             await updateDbStatus(docId, `PDF Parser lỗi: ${e.message}`);
+          }
         }
 
         return { text, method, bufferBase64: buffer.toString('base64') };
       });
 
-      // --- BƯỚC 2: OCR VÀ XỬ LÝ FAILOVER (Dùng AI) ---
+      // --- BƯỚC 2: OCR VÀ XỬ LÝ FAILOVER (AI) ---
       const finalResult = await step.run("ocr-and-failover", async () => {
         let text = parseResult.text;
         let method = parseResult.method;
 
-        // Nếu bước 1 không lấy được gì (ví dụ file PDF scan hoặc Word rỗng)
+        // Nếu cả Mammoth và JSZip đều thất bại trong việc tìm văn bản
         if (!text || text.trim().length < 5) {
           try {
-            await updateDbStatus(docId, "Dữ liệu thô rỗng. Đang gọi Gemini Vision OCR...");
+            await updateDbStatus(docId, "Văn bản thô rỗng (có thể là file scan/ảnh). Đang gọi Gemini Vision OCR...");
             const res = await ai.models.generateContent({
               model: 'gemini-3-flash-preview',
               contents: [{ role: 'user', parts: [
-                { inlineData: { data: parseResult.bufferBase64, mimeType: fileName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/png' } },
-                { text: "Extract all text from this document accurately." }
+                { inlineData: { data: parseResult.bufferBase64, mimeType: fileName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' } },
+                { text: "Đây là một tài liệu văn bản. Hãy trích xuất toàn bộ nội dung chữ trong tệp này một cách chính xác nhất có thể." }
               ]}]
             });
             text = res.text || "";
             method = "gemini-ocr-vision";
           } catch (e: any) {
-            // Nếu cả Gemini OCR cũng chết (hết lượt), ta đầu hàng vì không còn dữ liệu để xử lý
-            throw new Error(`Gemini OCR thất bại (${e.message}) và không có văn bản thô để dự phòng.`);
+            // Lỗi Quota 429 hoặc lỗi AI
+            const isQuota = e.message?.includes('429') || e.message?.includes('quota');
+            const errorMsg = isQuota ? "Gemini OCR Hết Quota (Lượt dùng miễn phí)" : `AI Error: ${e.message}`;
+            throw new Error(`${errorMsg}. Không có dữ liệu thô để phục hồi.`);
           }
-        } else if (method === "text-plain-reader" || method === "docx-jszip-xml") {
-            // Nếu lấy được văn bản nhưng là văn bản thô chưa đẹp, dùng Groq dọn dẹp (nếu có key)
-            try {
-                if (process.env.GROQ_API_KEY) {
-                    await updateDbStatus(docId, "Đang dùng Groq để làm đẹp văn bản...");
-                    const groqRes = await groq.chat.completions.create({
-                        messages: [{ role: "user", content: `Sửa lỗi định dạng và làm sạch văn bản sau: ${text.substring(0, 8000)}` }],
-                        model: "llama-3.1-70b-versatile"
-                    });
-                    text = groqRes.choices[0]?.message?.content || text;
-                    method += "+groq-clean";
-                }
-            } catch (e) { }
+        } else {
+            await updateDbStatus(docId, `Trích xuất thành công bằng ${method} (${text.length} ký tự).`);
         }
 
         return { text, method };
@@ -137,17 +158,31 @@ const processFileInBackground = inngest.createFunction(
 
       // --- BƯỚC 3: LƯU TRỮ VÀ INDEX ---
       await step.run("indexing", async () => {
-          await updateDbStatus(docId, "Đang tạo chỉ mục tìm kiếm...");
+          await updateDbStatus(docId, "Đang phân tích ngữ nghĩa và tạo chỉ mục...");
           
-          let meta = { title: fileName, summary: "Tài liệu văn bản thô", key_information: [], language: "vi" };
+          let meta = { title: fileName, summary: "Tài liệu văn bản", key_information: [], language: "vi" };
           try {
+             // Thử dùng Gemini để lấy metadata
              const res = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
-                contents: [{ role: 'user', parts: [{ text: `Analyze and return JSON: ${finalResult.text.substring(0, 5000)}` }] }],
+                contents: [{ role: 'user', parts: [{ text: `Hãy phân tích văn bản sau và trả về JSON {title, summary, key_information: string[], language}: ${finalResult.text.substring(0, 5000)}` }] }],
                 config: { responseMimeType: 'application/json' }
              });
              meta = JSON.parse(res.text || "{}");
-          } catch (e) { }
+          } catch (e) {
+             // Nếu Gemini hết lượt, thử dùng Groq để lấy Metadata (vì bước này chỉ cần text)
+             try {
+                 if (process.env.GROQ_API_KEY) {
+                     await updateDbStatus(docId, "Gemini bận, đang dùng Llama-3 để phân tích Metadata...");
+                     const groqRes = await groq.chat.completions.create({
+                        messages: [{ role: "user", content: `Trả về JSON {title, summary, key_information, language} cho văn bản này: ${finalResult.text.substring(0, 4000)}` }],
+                        model: "llama-3.1-70b-versatile",
+                        response_format: { type: "json_object" }
+                     });
+                     meta = JSON.parse(groqRes.choices[0]?.message?.content || "{}");
+                 }
+             } catch (ge) { }
+          }
 
           const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
           // @ts-ignore
@@ -157,7 +192,7 @@ const processFileInBackground = inngest.createFunction(
           const fullData = { ...meta, full_text_content: finalResult.text, parse_method: finalResult.method };
           await sql`UPDATE documents SET extracted_content = ${JSON.stringify(fullData)}, status = 'completed' WHERE id = ${docId}`;
 
-          // Embedding cho Pinecone
+          // Embedding cho Pinecone (Chỉ làm nếu Gemini còn lượt)
           try {
               const emb = await ai.models.embedContent({
                   model: "text-embedding-004",
@@ -172,7 +207,9 @@ const processFileInBackground = inngest.createFunction(
                       metadata: { filename: fileName, text: finalResult.text.substring(0, 4000) }
                   }] as any);
               }
-          } catch (e) { }
+          } catch (e) {
+              await updateDbStatus(docId, "Hoàn tất nhưng không thể tạo Vector Search (Hết quota Embedding).");
+          }
       });
 
     } catch (e: any) {
