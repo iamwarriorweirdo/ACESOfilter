@@ -10,6 +10,12 @@ import { createClient } from '@supabase/supabase-js';
 
 export const inngest = new Inngest({ id: "hr-rag-app" });
 
+// Helper: Safely get Env variables (Handle standard and Vercel naming conventions)
+function getEnv(key: string): string | undefined {
+    // Check direct key, uppercase, or typical Vercel prefixes
+    return process.env[key] || process.env[key.toUpperCase()] || process.env[`NEXT_PUBLIC_${key}`];
+}
+
 // Helper: Determine MIME type for AI Vision
 function getMimeType(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -19,6 +25,7 @@ function getMimeType(fileName: string): string {
   if (ext === 'webp') return 'image/webp';
   if (ext === 'heic') return 'image/heic';
   if (ext === 'heif') return 'image/heif';
+  if (ext === 'txt') return 'text/plain'; // Fix: Support text files explicitly
   return 'application/octet-stream'; // Fallback
 }
 
@@ -183,17 +190,25 @@ const processFileInBackground = inngest.createFunction(
                 await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                 const mimeType = getMimeType(fileName);
-                const res = await ai.models.generateContent({
-                  model: 'gemini-3-flash-preview',
-                  contents: {
-                      parts: [
-                        { inlineData: { data: bufferBase64, mimeType: mimeType } },
-                        { text: "OCR Task: Extract all text from this image/document accurately." }
-                      ]
-                  }
-                });
-                text = res.text || "";
-                method = "gemini-ocr-vision";
+                
+                // FIX: Không gửi 'application/octet-stream' lên Gemini vì sẽ gây lỗi 400
+                if (mimeType !== 'application/octet-stream') {
+                    const res = await ai.models.generateContent({
+                      model: 'gemini-3-flash-preview',
+                      contents: {
+                          parts: [
+                            { inlineData: { data: bufferBase64, mimeType: mimeType } },
+                            { text: "OCR Task: Extract all text from this image/document accurately." }
+                          ]
+                      }
+                    });
+                    text = res.text || "";
+                    method = "gemini-ocr-vision";
+                } else {
+                    // Fallback nếu không xác định được file type cho Vision
+                    await updateDbStatus(docId, "Loại tệp không hỗ trợ Vision OCR, bỏ qua bước này.");
+                    if (!text) text = "Nội dung không thể đọc được.";
+                }
              }
         }
 
@@ -310,12 +325,18 @@ const deleteFileInBackground = inngest.createFunction(
         const { docId, url } = event.data;
 
         // 1. Delete from Pinecone
+        // FIX: Wrap in Try/Catch to ignore 404/NotFound errors
         await step.run("delete-pinecone", async () => {
              if (process.env.PINECONE_API_KEY && process.env.PINECONE_INDEX_NAME) {
                  try {
                      const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
                      await pc.index(process.env.PINECONE_INDEX_NAME).deleteMany([docId]);
-                 } catch (e) { console.error("Pinecone delete error", e); }
+                 } catch (e: any) { 
+                     // Ignore 404 errors if ID doesn't exist
+                     if (!e.message?.includes('404') && !e.message?.includes('NotFound')) {
+                         console.error("Pinecone delete error", e); 
+                     }
+                 }
              }
         });
 
@@ -326,36 +347,42 @@ const deleteFileInBackground = inngest.createFunction(
             // Handle Cloudinary
             if (url.includes('cloudinary.com')) {
                 // Must configure explicitly in this scope as it might not be global
-                cloudinary.config({
-                    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-                    api_key: process.env.CLOUDINARY_API_KEY,
-                    api_secret: process.env.CLOUDINARY_API_SECRET
-                });
+                const cloudName = getEnv('CLOUDINARY_CLOUD_NAME');
+                const apiKey = getEnv('CLOUDINARY_API_KEY');
+                const apiSecret = getEnv('CLOUDINARY_API_SECRET');
 
-                // Extract public_id: https://res.cloudinary.com/.../upload/v1234/folder/file.ext
-                // Matches "folder/file" (no extension) after /upload/(v..)?/
-                const regex = /\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/;
-                const match = url.match(regex);
-                if (match && match[1]) {
-                    const publicId = match[1];
-                    try {
-                        await cloudinary.uploader.destroy(publicId);
-                    } catch (e) { console.error("Cloudinary delete error", e); }
+                if (cloudName && apiKey && apiSecret) {
+                    cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
+
+                    // Extract public_id: https://res.cloudinary.com/.../upload/v1234/folder/file.ext
+                    const regex = /\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/;
+                    const match = url.match(regex);
+                    if (match && match[1]) {
+                        try {
+                            await cloudinary.uploader.destroy(match[1]);
+                        } catch (e) { console.error("Cloudinary delete error", e); }
+                    }
                 }
             } 
             // Handle Supabase
             else if (url.includes('supabase.co')) {
-                try {
-                    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
-                    const urlObj = new URL(url);
-                    // Standard URL: .../storage/v1/object/public/documents/folder/file.pdf
-                    // We need "folder/file.pdf"
-                    const pathParts = urlObj.pathname.split('/documents/');
-                    if (pathParts.length > 1) {
-                        const filePath = decodeURIComponent(pathParts[1]);
-                        await supabase.storage.from('documents').remove([filePath]);
-                    }
-                } catch (e) { console.error("Supabase delete error", e); }
+                const sbUrl = getEnv('SUPABASE_URL');
+                const sbKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+
+                if (sbUrl && sbKey) {
+                    try {
+                        const supabase = createClient(sbUrl, sbKey);
+                        const urlObj = new URL(url);
+                        // Standard URL: .../storage/v1/object/public/documents/folder/file.pdf
+                        const pathParts = urlObj.pathname.split('/documents/');
+                        if (pathParts.length > 1) {
+                            const filePath = decodeURIComponent(pathParts[1]);
+                            await supabase.storage.from('documents').remove([filePath]);
+                        }
+                    } catch (e) { console.error("Supabase delete error", e); }
+                } else {
+                    console.warn("Skipping Supabase delete: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+                }
             }
         });
     }
