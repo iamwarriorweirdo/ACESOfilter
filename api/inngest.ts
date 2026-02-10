@@ -59,7 +59,6 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
     const timestamp = new Date().toLocaleTimeString('vi-VN');
     const logLine = `[${timestamp}] ${isError ? '❌ ERROR' : 'ℹ️ INFO'}: ${message}`;
     
-    // We append logs to the status if it's already failed, otherwise we set it
     if (isError) {
         await sql`UPDATE documents SET extracted_content = ${logLine}, status = 'failed' WHERE id = ${docId}`;
     } else {
@@ -117,8 +116,7 @@ async function callGroqVision(bufferBase64: string, model: string = 'llama-3.2-1
 }
 
 /**
- * Nâng cấp Deep Extraction cho Docx: Quét toàn bộ XML để tìm tag <w:t>
- * Giúp lấy được text trong Text Box, Table, Header, Footer mà Mammoth thường bỏ qua.
+ * Deep Extraction cho Docx: Quét XML để lấy text trong Text Box, Table, Header, Footer
  */
 async function extractDocxDeepText(buffer: Buffer): Promise<string> {
   try {
@@ -129,7 +127,6 @@ async function extractDocxDeepText(buffer: Buffer): Promise<string> {
     for (const f of files) {
         const content = await zip.file(f)?.async("string");
         if (!content) continue;
-        // Regex tìm mọi nội dung giữa các thẻ <w:t>...</w:t>
         const matches = content.match(/<w:t[^>]*>(.*?)<\/w:t>/g);
         if (matches) {
             fullText += matches.map(val => val.replace(/<[^>]+>/g, '')).join(' ') + " ";
@@ -144,7 +141,6 @@ const processFileInBackground = inngest.createFunction(
   { event: "app/process.file" },
   async ({ event, step }) => {
     const { url, fileName, docId } = event.data;
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
     try {
       const configStep = await step.run("get-config", async () => {
@@ -174,13 +170,13 @@ const processFileInBackground = inngest.createFunction(
           method = "text-plain";
         } else if (lowName.endsWith('.docx')) {
           try {
+            // @ts-ignore - Fix TS7016 by ignoring lack of types in serverless environment
             const mammoth = await import('mammoth');
             const extractor = mammoth.default || (mammoth as any);
             const res = await extractor.extractRawText({ buffer });
             text = res.value;
             method = "docx-mammoth";
             
-            // Nếu Mammoth trả về quá ít text, dùng Deep Extraction (JSZip)
             if (!text || text.trim().length < 10) {
                 text = await extractDocxDeepText(buffer);
                 method = "docx-deep-xml";
@@ -190,11 +186,16 @@ const processFileInBackground = inngest.createFunction(
             method = "docx-deep-xml-fallback";
           }
         } else if (lowName.endsWith('.pdf')) {
-          const pdfParseModule = await import('pdf-parse');
-          const pdfExtractor = pdfParseModule.default || (pdfParseModule as any);
-          const data = await pdfExtractor(buffer);
-          text = data.text;
-          method = "pdf-parse";
+          try {
+            // @ts-ignore - Fix TS7016
+            const pdfParseModule = await import('pdf-parse');
+            const pdfExtractor = pdfParseModule.default || (pdfParseModule as any);
+            const data = await pdfExtractor(buffer);
+            text = data.text;
+            method = "pdf-parse";
+          } catch (e) {
+            method = "pdf-parse-failed";
+          }
         }
 
         const isAIRequired = !text || text.trim().length < 20 || 
@@ -229,9 +230,8 @@ const processFileInBackground = inngest.createFunction(
              }
         }
 
-        // Final sanity check
         if (!text || text.trim().length === 0) {
-            throw new Error(`Không thể trích xuất nội dung từ ${fileName}. Phương pháp cuối cùng (${method}) trả về null.`);
+            throw new Error(`Không thể trích xuất nội dung từ ${fileName}. Phương pháp cuối cùng (${method}) trả về rỗng.`);
         }
 
         let meta = { title: fileName, summary: "Tài liệu hệ thống", key_information: [], language: "vi" };
@@ -260,9 +260,7 @@ const processFileInBackground = inngest.createFunction(
                  });
                  meta = JSON.parse(res.text || "{}");
              }
-        } catch (e) { 
-            console.error("Meta Analysis Error", e);
-        }
+        } catch (e) { }
 
         const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
         const { neon } = await import('@neondatabase/serverless');
@@ -307,7 +305,6 @@ const processFileInBackground = inngest.createFunction(
           }
       });
 
-      // FIX: Return explicit result so Inngest Dashboard shows output instead of "null"
       return { 
           status: "completed", 
           docId, 
@@ -333,11 +330,7 @@ const deleteFileInBackground = inngest.createFunction(
                  try {
                      const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
                      await pc.index(process.env.PINECONE_INDEX_NAME).deleteMany([docId]);
-                 } catch (e: any) { 
-                     if (e.name === 'PineconeNotFoundError' || e.message?.includes('404') || e.message?.includes('NotFound')) {
-                         console.log("Pinecone: Vector not found, skipping.");
-                     }
-                 }
+                 } catch (e: any) { }
              }
         });
 
@@ -356,7 +349,7 @@ const deleteFileInBackground = inngest.createFunction(
                     if (match && match[1]) {
                         try {
                             await cloudinary.uploader.destroy(match[1]);
-                        } catch (e) { console.error("Cloudinary delete error", e); }
+                        } catch (e) { }
                     }
                 }
             } 
@@ -373,7 +366,7 @@ const deleteFileInBackground = inngest.createFunction(
                             const filePath = decodeURIComponent(pathParts[1]);
                             await supabase.storage.from('documents').remove([filePath]);
                         }
-                    } catch (e) { console.error("Supabase delete error", e); }
+                    } catch (e) { }
                 }
             }
         });
