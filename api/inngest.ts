@@ -56,7 +56,7 @@ async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mi
     };
 
     const res = await fetch("https://api.openai.com/v1/chat/completions", options);
-    const data = await res.json();
+    const data = await res.json() as any;
     if (data.error) throw new Error(data.error.message);
     return data.choices[0]?.message?.content || "";
 }
@@ -112,8 +112,7 @@ async function callHFInference(buffer: Buffer, modelId: string) {
     };
 
     const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, options);
-    
-    const result = await response.json();
+    const result = await response.json() as any;
     
     if (result.error) {
          throw new Error(`HF Error: ${result.error}`);
@@ -141,7 +140,6 @@ const processFileInBackground = inngest.createFunction(
   { event: "app/process.file" },
   async ({ event, step }) => {
     const { url, fileName, docId } = event.data;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
     try {
@@ -181,13 +179,14 @@ const processFileInBackground = inngest.createFunction(
           }
         } else if (lowName.endsWith('.pdf')) {
           // @ts-ignore
-          const pdfParse = await import('pdf-parse');
-          const pdfExtractor = pdfParse.default || (pdfParse as any);
+          const pdfParseModule = await import('pdf-parse');
+          const pdfExtractor = pdfParseModule.default || (pdfParseModule as any);
           const data = await pdfExtractor(buffer);
           text = data.text;
           method = "pdf-parse";
         }
-        return { text, method, bufferBase64: buffer.toString('base64'), buffer };
+        // Trả về base64 thay vì Buffer để tránh lỗi serialization của Inngest
+        return { text, method, bufferBase64: buffer.toString('base64') };
       });
 
       const finalResult = await step.run("ocr-and-failover", async () => {
@@ -216,6 +215,7 @@ const processFileInBackground = inngest.createFunction(
                  method = "hf-vision-ocr";
              } else {
                 await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
+                const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                 const res = await ai.models.generateContent({
                   model: 'gemini-3-flash-preview',
                   contents: [{ role: 'user', parts: [
@@ -229,8 +229,9 @@ const processFileInBackground = inngest.createFunction(
           } catch (e: any) {
             await updateDbStatus(docId, `OCR Error: ${e.message}. Fallback...`);
              try {
+                const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                 const res = await ai.models.generateContent({
-                  model: 'gemini-2.0-flash-exp',
+                  model: 'gemini-3-flash-preview',
                   contents: [{ role: 'user', parts: [
                     { inlineData: { data: parseResult.bufferBase64, mimeType: 'application/octet-stream' } },
                     { text: "Recover text content from this file." }
@@ -250,7 +251,7 @@ const processFileInBackground = inngest.createFunction(
           
           try {
              if (analysisModel.startsWith('gpt')) {
-                  const options: any = {
+                  const opts: any = {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                     body: JSON.stringify({
@@ -259,9 +260,9 @@ const processFileInBackground = inngest.createFunction(
                         response_format: { type: "json_object" }
                     })
                   };
-                const res = await fetch("https://api.openai.com/v1/chat/completions", options);
-                const data = await res.json();
-                meta = JSON.parse(data.choices[0]?.message?.content || "{}");
+                  const res = await fetch("https://api.openai.com/v1/chat/completions", opts);
+                  const data = await res.json() as any;
+                  meta = JSON.parse(data.choices[0]?.message?.content || "{}");
              } else if (analysisModel.includes('llama')) {
                 const groqRes = await groq.chat.completions.create({
                     messages: [{ role: "user", content: `JSON metadata cho văn bản: ${finalResult.text.substring(0, 3000)}` }],
@@ -270,8 +271,9 @@ const processFileInBackground = inngest.createFunction(
                 });
                 meta = JSON.parse(groqRes.choices[0]?.message?.content || "{}");
              } else {
+                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                  const res = await ai.models.generateContent({
-                    model: analysisModel,
+                    model: 'gemini-3-flash-preview',
                     contents: [{ role: 'user', parts: [{ text: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }] }],
                     config: { responseMimeType: 'application/json' }
                  });
@@ -288,15 +290,16 @@ const processFileInBackground = inngest.createFunction(
           try {
               let vector: number[] = [];
               if (preferredEmbeddingModel.includes('text-embedding-3') && process.env.OPEN_AI_API_KEY) {
-                   const options: any = {
+                   const opts: any = {
                        method: "POST",
                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                        body: JSON.stringify({ model: preferredEmbeddingModel, input: finalResult.text.substring(0, 3000) })
                    };
-                   const res = await fetch("https://api.openai.com/v1/embeddings", options);
-                   const data = await res.json();
+                   const res = await fetch("https://api.openai.com/v1/embeddings", opts);
+                   const data = await res.json() as any;
                    vector = data.data?.[0]?.embedding || [];
               } else {
+                  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                   const emb = await ai.models.embedContent({
                       model: "text-embedding-004",
                       contents: [{ parts: [{ text: finalResult.text.substring(0, 3000) }] }]
