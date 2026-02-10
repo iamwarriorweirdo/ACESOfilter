@@ -84,9 +84,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const lastMessage = messages?.[messages.length - 1];
     if (!lastMessage) return res.status(400).json({ error: "No messages" });
 
-    const selectedModel = config?.aiModel || config?.chatModel || 'gemini-3-flash-preview';
+    // Lọc model name: Tuyệt đối không để giá trị "auto" lọt vào SDK
+    let inputModel = config?.aiModel || config?.chatModel || 'gemini-3-flash-preview';
+    let selectedModel = 'gemini-3-flash-preview';
+    
+    if (inputModel.includes('gpt')) selectedModel = inputModel;
+    else if (inputModel.includes('llama') || inputModel.includes('qwen')) selectedModel = inputModel;
+    else if (inputModel.includes('gemini')) selectedModel = inputModel;
+    // Fallback nếu model là "auto" hoặc bất kỳ chuỗi lạ nào
+    else selectedModel = 'gemini-3-flash-preview';
+
     const embeddingModel = config?.embeddingModel || 'text-embedding-004';
     const userQuery = lastMessage.content;
+    
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
     
@@ -96,18 +106,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
-    // Chạy các tác vụ tìm kiếm song song để tối ưu tốc độ
     const contextPromise = (async () => {
       let text = "";
       const seen = new Set<string>();
       
       const processContent = (raw: string | null) => {
           if (!raw || raw.length < 50 || raw.includes("Đang chờ xử lý") || raw.includes("pending")) 
-              return "[[STATUS: UNREADABLE - NỘI DUNG CHƯA ĐƯỢC TRÍCH XUẤT HOẶC FILE LỖI]]";
+              return "[[Nội dung chưa sẵn sàng]]";
           return raw;
       };
 
-      // Thực hiện tìm kiếm Database và Embedding song song
       const [dbDocs, vector] = await Promise.all([
           sql`SELECT name, extracted_content FROM documents WHERE name ILIKE ${`%${userQuery}%`} OR extracted_content ILIKE ${`%${userQuery}%`} LIMIT 3`.catch(() => []),
           getSafeEmbedding(ai, userQuery, embeddingModel)
@@ -119,29 +127,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       if (text.length < 4000 && vector.length > 0) {
-          const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
-          for (const m of queryResponse.matches) {
-              const fname = m.metadata?.filename as string;
-              if (fname && !seen.has(fname)) {
-                  text += `File: "${fname}"\nContent: ${String(m.metadata?.text || "").substring(0, 2000)}\n---\n`;
+          try {
+              const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
+              for (const m of queryResponse.matches) {
+                  const fname = m.metadata?.filename as string;
+                  if (fname && !seen.has(fname)) {
+                      text += `File: "${fname}"\nContent: ${String(m.metadata?.text || "").substring(0, 2000)}\n---\n`;
+                  }
               }
-          }
+          } catch (pe) { console.error("Pinecone query error", pe); }
       }
       return text;
     })();
 
     const context = await contextPromise;
 
-    const systemInstruction = `
-    Bạn là Trợ lý AI chuyên trách tài liệu nội bộ. 
-    QUY TẮC:
-    1. CHỈ sử dụng thông tin từ phần "Context" bên dưới. 
-    2. Nếu không tìm thấy thông tin, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống."
-    3. Cung cấp link file bằng cú pháp [[File: Tên_File]] nếu nhắc tới file đó.
+    const systemInstruction = `Bạn là Trợ lý AI chuyên trách tài liệu nội bộ.
+QUY TẮC:
+1. CHỈ sử dụng thông tin từ phần "Context" bên dưới.
+2. Nếu không có trong Context, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống."
+3. Cung cấp link file bằng cú pháp [[File: Tên_File]] nếu nhắc tới file đó.
 
-    Context:
-    ${context || "Không tìm thấy dữ liệu liên quan."}
-    `;
+Context:
+${context || "Không tìm thấy dữ liệu liên quan."}`;
 
     if (selectedModel.includes('gpt')) {
         await queryOpenAI([{ role: 'system', content: systemInstruction }, ...messages], selectedModel, res);
@@ -154,18 +162,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
         for await (const chunk of strRes) { res.write(chunk.choices[0]?.delta?.content || ""); }
     } else {
-        const geminiModel = selectedModel === 'gemini-3-flash-preview' ? 'gemini-2.0-flash-exp' : selectedModel;
-        const chat = await ai.models.generateContentStream({
-            model: geminiModel,
-            contents: [{ role: 'user', parts: [{ text: systemInstruction }] }, ...messages.map((m:any)=>({role: m.role==='assistant'?'model':'user', parts:[{text:m.content}]}))],
-            config: { temperature: 0.1 }
+        // Gemini Models
+        const chatStream = await ai.models.generateContentStream({
+            model: selectedModel,
+            contents: messages.map((m: any) => ({
+                role: m.role === 'assistant' || m.role === 'model' ? 'model' : 'user',
+                parts: [{ text: m.content }]
+            })),
+            config: {
+                systemInstruction: systemInstruction,
+                temperature: 0.1
+            }
         });
-        for await (const chunk of chat) { if (chunk.text) res.write(chunk.text); }
+
+        for await (const chunk of chatStream) {
+            if (chunk.text) res.write(chunk.text);
+        }
     }
     res.end();
   } catch (error: any) {
-    console.error("Chat Error:", error);
-    if (!res.headersSent) res.status(500).json({ error: error.message });
-    else { res.write(`\n\n[Lỗi kết nối AI]: ${error.message}`); res.end(); }
+    console.error("Chat Error Handled:", error);
+    if (!res.headersSent) {
+        res.status(500).json({ error: error.message || "Internal Server Error" });
+    } else {
+        res.write(`\n\n[Lỗi kết nối AI]: ${error.message}`);
+        res.end();
+    }
   }
 }

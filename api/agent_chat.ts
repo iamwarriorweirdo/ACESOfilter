@@ -1,5 +1,4 @@
 
-// DO fix: use correct import and property based text access for @google/genai
 import { GoogleGenAI } from "@google/genai";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -29,7 +28,7 @@ async function retrieveContext(state: typeof AgentState.State) {
             SELECT name, extracted_content FROM documents 
             WHERE name ILIKE ${'%' + query + '%'} OR extracted_content ILIKE ${'%' + query + '%'}
             LIMIT 2
-        `;
+        `.catch(() => []);
 
         for (const doc of keywordMatches) {
             contextText += `[FILE]: ${doc.name}\n${doc.extracted_content?.substring(0, 1500)}\n---\n`;
@@ -37,18 +36,18 @@ async function retrieveContext(state: typeof AgentState.State) {
 
         // Semantic Search
         if (contextText.length < 1000) {
-            // Fix: Always use named parameter for apiKey and use it directly from process.env.API_KEY
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const result = await ai.models.embedContent({
                 model: "text-embedding-004",
                 contents: [{ parts: [{ text: query }] }]
             });
-            // FIX: Access 'embeddings' instead of 'embedding'
             const vector = result.embeddings?.[0]?.values || [];
 
-            const vRes = await index.query({ vector, topK: 2, includeMetadata: true });
-            for (const match of vRes.matches) {
-                contextText += `[VECTOR MATCH]: ${match.metadata?.filename}\n${match.metadata?.text}\n---\n`;
+            if (vector.length > 0) {
+                const vRes = await index.query({ vector, topK: 2, includeMetadata: true });
+                for (const match of vRes.matches) {
+                    contextText += `[VECTOR MATCH]: ${match.metadata?.filename}\n${match.metadata?.text}\n---\n`;
+                }
             }
         }
     } catch (e) { console.error("Agent Retrieval Error", e); }
@@ -57,7 +56,6 @@ async function retrieveContext(state: typeof AgentState.State) {
 }
 
 async function generateAnswer(state: typeof AgentState.State) {
-    // Fix: Always use named parameter for apiKey and use it directly from process.env.API_KEY
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
     const prompt = `Bạn là Trợ lý HR AI cấp cao. 
@@ -66,12 +64,11 @@ async function generateAnswer(state: typeof AgentState.State) {
 
     Hãy trả lời câu hỏi của người dùng một cách chuyên nghiệp và chính xác nhất: ${state.userQuery}`;
 
-    // DO fix: use ai.models.generateContent and text property
     const result = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: prompt
     });
-    return { messages: [{ role: "assistant", content: result.text }] };
+    return { messages: [{ role: "assistant", content: result.text || "Xin lỗi, tôi không thể tạo phản hồi lúc này." }] };
 }
 
 // Xây dựng đồ thị workflow
