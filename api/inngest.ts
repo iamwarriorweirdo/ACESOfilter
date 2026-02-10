@@ -16,6 +16,31 @@ function getEnv(key: string): string | undefined {
     return process.env[key] || process.env[key.toUpperCase()] || process.env[`NEXT_PUBLIC_${key}`];
 }
 
+// Helper: Embed with Fallback
+async function getEmbeddingWithFallback(ai: GoogleGenAI, text: string, primaryModel: string = 'text-embedding-004'): Promise<number[]> {
+    try {
+        const res = await ai.models.embedContent({
+            model: primaryModel,
+            contents: { parts: [{ text }] }
+        });
+        return res.embeddings?.[0]?.values || [];
+    } catch (e: any) {
+        console.warn(`Embedding failed with ${primaryModel}, trying fallback...`, e.message);
+        try {
+            // Fallback to older model if 004 fails
+            const fallbackModel = 'embedding-001';
+            const res = await ai.models.embedContent({
+                model: fallbackModel,
+                contents: { parts: [{ text }] }
+            });
+            return res.embeddings?.[0]?.values || [];
+        } catch (e2) {
+            console.error("Embedding fallback also failed", e2);
+            return [];
+        }
+    }
+}
+
 // Helper: Determine MIME type for AI Vision
 function getMimeType(fileName: string): string {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -25,8 +50,8 @@ function getMimeType(fileName: string): string {
   if (ext === 'webp') return 'image/webp';
   if (ext === 'heic') return 'image/heic';
   if (ext === 'heif') return 'image/heif';
-  if (ext === 'txt') return 'text/plain'; // Fix: Support text files explicitly
-  return 'application/octet-stream'; // Fallback
+  if (ext === 'txt') return 'text/plain'; 
+  return 'application/octet-stream'; 
 }
 
 async function fetchFileBuffer(url: string) {
@@ -134,8 +159,6 @@ const processFileInBackground = inngest.createFunction(
       const preferredEmbeddingModel = configStep.embeddingModel || 'text-embedding-004';
 
       // 2. Heavy Lifting (Extract + OCR + Analyze + Save DB)
-      // CHIẾN THUẬT STORAGE POINTER: Bước này KHÔNG return nội dung file.
-      // Nó tải file về, xử lý xong và lưu thẳng vào DB. Chỉ trả về { success: true }.
       await step.run("extract-analyze-store", async () => {
         await updateDbStatus(docId, `Bắt đầu xử lý: ${fileName}`);
         
@@ -191,7 +214,6 @@ const processFileInBackground = inngest.createFunction(
                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                 const mimeType = getMimeType(fileName);
                 
-                // FIX: Không gửi 'application/octet-stream' lên Gemini vì sẽ gây lỗi 400
                 if (mimeType !== 'application/octet-stream') {
                     const res = await ai.models.generateContent({
                       model: 'gemini-3-flash-preview',
@@ -205,7 +227,6 @@ const processFileInBackground = inngest.createFunction(
                     text = res.text || "";
                     method = "gemini-ocr-vision";
                 } else {
-                    // Fallback nếu không xác định được file type cho Vision
                     await updateDbStatus(docId, "Loại tệp không hỗ trợ Vision OCR, bỏ qua bước này.");
                     if (!text) text = "Nội dung không thể đọc được.";
                 }
@@ -259,13 +280,11 @@ const processFileInBackground = inngest.createFunction(
       });
 
       // 3. Generate Vectors (Pointer Strategy)
-      // Bước này KHÔNG nhận text từ output của bước trước. Nó tự SELECT từ DB bằng docId.
       await step.run("generate-vectors", async () => {
           const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
           
-          // FETCH CONTENT FROM DB using POINTER (docId)
           const rows = await sql`SELECT extracted_content FROM documents WHERE id = ${docId}`;
           if (rows.length === 0) throw new Error("Document not found in DB");
           
@@ -273,7 +292,6 @@ const processFileInBackground = inngest.createFunction(
           try {
               contentData = JSON.parse(rows[0].extracted_content);
           } catch (e) {
-              // If simple text or invalid JSON
               contentData = { full_text_content: rows[0].extracted_content };
           }
           
@@ -295,11 +313,8 @@ const processFileInBackground = inngest.createFunction(
                vector = data.data?.[0]?.embedding || [];
           } else {
               const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
-              const emb = await ai.models.embedContent({
-                  model: "text-embedding-004",
-                  contents: { parts: [{ text: textToEmbed.substring(0, 3000) }] }
-              });
-              vector = emb.embeddings?.[0]?.values || [];
+              // Use Safe Fallback
+              vector = await getEmbeddingWithFallback(ai, textToEmbed.substring(0, 3000), preferredEmbeddingModel);
           }
 
           if (vector.length > 0 && process.env.PINECONE_API_KEY) {
@@ -307,7 +322,6 @@ const processFileInBackground = inngest.createFunction(
               await pc.index(process.env.PINECONE_INDEX_NAME!).upsert([{ id: docId, values: vector, metadata: { filename: fileName, text: textToEmbed.substring(0, 4000) } }] as any);
           }
           
-          // Final status update
           await sql`UPDATE documents SET status = 'completed' WHERE id = ${docId}`;
       });
 
@@ -325,16 +339,17 @@ const deleteFileInBackground = inngest.createFunction(
         const { docId, url } = event.data;
 
         // 1. Delete from Pinecone
-        // FIX: Wrap in Try/Catch to ignore 404/NotFound errors
         await step.run("delete-pinecone", async () => {
              if (process.env.PINECONE_API_KEY && process.env.PINECONE_INDEX_NAME) {
                  try {
                      const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
                      await pc.index(process.env.PINECONE_INDEX_NAME).deleteMany([docId]);
                  } catch (e: any) { 
-                     // Ignore 404 errors if ID doesn't exist
-                     if (!e.message?.includes('404') && !e.message?.includes('NotFound')) {
-                         console.error("Pinecone delete error", e); 
+                     // Safe ignore 404
+                     if (e.name === 'PineconeNotFoundError' || e.message?.includes('404') || e.message?.includes('NotFound')) {
+                         console.log("Pinecone: Vector not found or already deleted, skipping.");
+                     } else {
+                         console.error("Pinecone delete error", e);
                      }
                  }
              }
@@ -346,15 +361,12 @@ const deleteFileInBackground = inngest.createFunction(
 
             // Handle Cloudinary
             if (url.includes('cloudinary.com')) {
-                // Must configure explicitly in this scope as it might not be global
                 const cloudName = getEnv('CLOUDINARY_CLOUD_NAME');
                 const apiKey = getEnv('CLOUDINARY_API_KEY');
                 const apiSecret = getEnv('CLOUDINARY_API_SECRET');
 
                 if (cloudName && apiKey && apiSecret) {
                     cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
-
-                    // Extract public_id: https://res.cloudinary.com/.../upload/v1234/folder/file.ext
                     const regex = /\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/;
                     const match = url.match(regex);
                     if (match && match[1]) {
@@ -366,14 +378,15 @@ const deleteFileInBackground = inngest.createFunction(
             } 
             // Handle Supabase
             else if (url.includes('supabase.co')) {
-                const sbUrl = getEnv('SUPABASE_URL');
-                const sbKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+                // FORCE READ ENV
+                const sbUrl = getEnv('SUPABASE_URL') || process.env.SUPABASE_URL;
+                const sbKey = getEnv('SUPABASE_SERVICE_ROLE_KEY') || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
                 if (sbUrl && sbKey) {
                     try {
                         const supabase = createClient(sbUrl, sbKey);
                         const urlObj = new URL(url);
-                        // Standard URL: .../storage/v1/object/public/documents/folder/file.pdf
+                        // URL: .../storage/v1/object/public/documents/folder/file.pdf -> Path: folder/file.pdf
                         const pathParts = urlObj.pathname.split('/documents/');
                         if (pathParts.length > 1) {
                             const filePath = decodeURIComponent(pathParts[1]);
@@ -381,7 +394,7 @@ const deleteFileInBackground = inngest.createFunction(
                         }
                     } catch (e) { console.error("Supabase delete error", e); }
                 } else {
-                    console.warn("Skipping Supabase delete: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+                    console.error("Supabase Credentials Missing in Background Job. Check SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY env vars.");
                 }
             }
         });

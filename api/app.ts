@@ -252,7 +252,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             let cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
             let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
             let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
-            if (!cloudName || !apiKey || !apiSecret) return res.status(500).json({ error: `Server thiếu cấu hình Cloudinary.` });
+            
+            // FIX: Return 404/400 instead of 500 to allow smooth fallback on client
+            if (!cloudName || !apiKey || !apiSecret) {
+                return res.status(400).json({ 
+                    error: "Cloudinary not configured", 
+                    fallback: true 
+                });
+            }
+            
             const timestamp = Math.round(new Date().getTime() / 1000);
             const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
             return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });

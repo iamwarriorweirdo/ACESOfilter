@@ -8,6 +8,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'text-embedding-004') {
     const openAiKey = process.env.OPEN_AI_API_KEY;
     
+    // 1. Try OpenAI if configured
     if (configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
          try {
              const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
@@ -21,6 +22,7 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
          } catch (oe) { }
     }
 
+    // 2. Try Gemini Primary (004)
     try {
         const res = await ai.models.embedContent({
             model: "text-embedding-004",
@@ -28,6 +30,19 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
+        // 3. Try Gemini Fallback (001) if 404 or other errors
+        console.warn("Gemini 004 embedding failed, trying fallback...", e.message);
+        try {
+            const res = await ai.models.embedContent({
+                model: "embedding-001",
+                contents: [{ parts: [{ text }] }]
+            });
+            return res.embeddings?.[0]?.values || [];
+        } catch (e2) {
+            console.error("Gemini embedding fallback also failed", e2);
+        }
+
+        // 4. Last Resort: OpenAI Fallback (if key exists but model wasn't preferred)
         if (openAiKey) {
              try {
                  const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
