@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Document, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
@@ -35,9 +34,11 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const logContainerRef = useRef<HTMLDivElement>(null);
     const t = (TRANSLATIONS as any)[language] || TRANSLATIONS.en;
 
-    // Updated Proxy URL to use merged handler
-    const getProxyUrl = (originalUrl: string) => {
-        return `/api/app?handler=proxy&url=${encodeURIComponent(originalUrl.replace('http://', 'https://'))}`;
+    // Updated Proxy URL to support Content-Type override
+    const getProxyUrl = (originalUrl: string, type?: string) => {
+        let url = `/api/app?handler=proxy&url=${encodeURIComponent(originalUrl.replace('http://', 'https://'))}`;
+        if (type) url += `&contentType=${encodeURIComponent(type)}`;
+        return url;
     };
 
     useEffect(() => {
@@ -158,7 +159,9 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const isImage = document.type.includes('image');
     const isPdf = document.type.includes('pdf');
     const googleDocsUrl = `https://docs.google.com/gview?url=${encodeURIComponent(document.content.replace('http://', 'https://'))}&embedded=true`;
-    const proxyPdfUrl = getProxyUrl(document.content);
+    
+    // Pass document.type to ensure proxy sends correct Content-Type for PDF inline viewing
+    const proxyPdfUrl = getProxyUrl(document.content, document.type);
 
     const renderJsonContent = (content: string) => {
         const isRawError = content.startsWith("ERROR_DETAILS:") || content.includes("[ERROR]");
@@ -175,7 +178,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             } catch (e) { }
         }
 
-        // --- 1. TIMEOUT STATE ---
         if (timeoutError) {
              return (
                 <div className="flex flex-col h-full bg-[#0d0d0d] text-gray-300 font-mono p-6 overflow-hidden items-center justify-center text-center">
@@ -198,7 +200,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             );
         }
 
-        // --- 2. ERROR STATE ---
         if (errorBody) {
             return (
                 <div className="p-6 flex flex-col items-center justify-center text-center space-y-4 h-full bg-[#0d0d0d]">
@@ -225,12 +226,10 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             );
         }
 
-        // --- 3. SUCCESS STATE (Valid JSON) ---
         try {
             const data = JSON.parse(content);
             return (
                 <div className="space-y-6 p-6 h-full overflow-y-auto bg-gray-50/5 dark:bg-[#0d0d0d]">
-                    {/* Metadata Header */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="md:col-span-2 p-5 rounded-2xl bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 relative overflow-hidden">
                             <div className="absolute top-0 right-0 p-3 opacity-20"><FileText size={40} /></div>
@@ -248,7 +247,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                         </div>
                     </div>
 
-                    {/* Summary */}
                     <div className="p-5 rounded-2xl bg-card border border-border shadow-sm">
                          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-border/50">
                             <Activity size={16} className="text-orange-500" />
@@ -257,7 +255,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                          <p className="text-sm leading-relaxed text-foreground/90">{data.summary || "No summary generated."}</p>
                     </div>
 
-                    {/* Key Info Grid */}
                      {data.key_information && Array.isArray(data.key_information) && (
                         <div className="p-5 rounded-2xl bg-card border border-border shadow-sm">
                             <div className="flex items-center gap-2 mb-4">
@@ -275,7 +272,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                         </div>
                     )}
                     
-                    {/* Raw JSON Toggle */}
                     <div className="pt-4 border-t border-border/30">
                         <details className="group">
                             <summary className="cursor-pointer text-xs font-bold text-muted-foreground hover:text-foreground flex items-center gap-2 select-none">
@@ -290,14 +286,12 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 </div>
             );
         } catch (e) {
-            // --- 4. PROCESSING / LOG STATE (Console View) ---
             const lastLog = logs[logs.length - 1] || content;
             const isErrorLog = lastLog.includes("[ERROR]") || lastLog.includes("Failed");
             const isWarnLog = lastLog.includes("[WARN]") || lastLog.includes("weak");
             
             return (
                 <div className="flex flex-col h-full bg-[#0d0d0d] text-gray-300 font-mono overflow-hidden relative">
-                    {/* Header */}
                     <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/5">
                         <div className="flex items-center gap-3">
                             <div className="relative">
@@ -315,7 +309,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                         </div>
                     </div>
 
-                    {/* Console Output */}
                     <div ref={logContainerRef} className="flex-1 p-6 overflow-y-auto space-y-3 font-mono text-xs scroll-smooth">
                         {logs.length === 0 && (
                             <div className="text-gray-600 italic">Waiting for log stream...</div>
@@ -332,11 +325,9 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                                 </div>
                              );
                         })}
-                        {/* Fake cursor */}
                         <div className="w-2 h-4 bg-gray-500 animate-pulse mt-2"></div>
                     </div>
 
-                    {/* Footer Actions */}
                     <div className="p-4 bg-white/5 border-t border-white/10 flex justify-between items-center">
                         <div className="text-[10px] text-gray-500">
                              Use 'Force Re-Scan' if process hangs &gt; 3 min.

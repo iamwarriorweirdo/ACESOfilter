@@ -6,17 +6,13 @@ import Groq from "groq-sdk";
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'text-embedding-004') {
-    // Ưu tiên dùng biến OPEN_AI_API_KEY mới từ screenshot
     const openAiKey = process.env.OPEN_AI_API_KEY;
     
     if (configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
          try {
-             const openAiRes = await fetch("https://api.openai.com/v1/embeddings", {
+             const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
                  method: "POST",
-                 headers: { 
-                     "Content-Type": "application/json", 
-                     "Authorization": `Bearer ${openAiKey}` 
-                 },
+                 headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openAiKey}` },
                  body: JSON.stringify({ model: configEmbeddingModel, input: text })
              });
              const data = await openAiRes.json();
@@ -34,7 +30,7 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
     } catch (e: any) {
         if (openAiKey) {
              try {
-                 const openAiRes = await fetch("https://api.openai.com/v1/embeddings", {
+                 const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
                      method: "POST",
                      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openAiKey}` },
                      body: JSON.stringify({ model: "text-embedding-3-small", input: text })
@@ -51,7 +47,7 @@ async function queryOpenAI(messages: any[], model: string, res: VercelResponse) 
     const apiKey = process.env.OPEN_AI_API_KEY;
     if (!apiKey) throw new Error("Missing OPEN_AI_API_KEY");
 
-    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const openAiResponse = await (fetch as any)("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
         body: JSON.stringify({ model: model, messages: messages, stream: true })
@@ -98,7 +94,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
     const index = pc.index(process.env.PINECONE_INDEX_NAME!);
 
-    const context = await (async () => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+
+    // Chạy các tác vụ tìm kiếm song song để tối ưu tốc độ
+    const contextPromise = (async () => {
       let text = "";
       const seen = new Set<string>();
       
@@ -108,48 +107,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return raw;
       };
 
-      try {
-        const docs = await sql`
-          SELECT name, extracted_content FROM documents 
-          WHERE name ILIKE ${`%${userQuery}%`} OR extracted_content ILIKE ${`%${userQuery}%`}
-          LIMIT 3
-        `;
-        for (const d of docs) {
+      // Thực hiện tìm kiếm Database và Embedding song song
+      const [dbDocs, vector] = await Promise.all([
+          sql`SELECT name, extracted_content FROM documents WHERE name ILIKE ${`%${userQuery}%`} OR extracted_content ILIKE ${`%${userQuery}%`} LIMIT 3`.catch(() => []),
+          getSafeEmbedding(ai, userQuery, embeddingModel)
+      ]);
+
+      for (const d of dbDocs) {
           seen.add(d.name);
           text += `File: "${d.name}"\nContent: ${processContent(d.extracted_content).substring(0, 3000)}\n---\n`;
-        }
-      } catch (e) { }
+      }
 
-      if (text.length < 2000) {
-        const vector = await getSafeEmbedding(ai, userQuery, embeddingModel);
-        if (vector.length > 0) {
+      if (text.length < 4000 && vector.length > 0) {
           const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
           for (const m of queryResponse.matches) {
               const fname = m.metadata?.filename as string;
               if (fname && !seen.has(fname)) {
-                text += `File: "${fname}"\nContent: ${String(m.metadata?.text || "").substring(0, 2000)}\n---\n`;
+                  text += `File: "${fname}"\nContent: ${String(m.metadata?.text || "").substring(0, 2000)}\n---\n`;
               }
           }
-        }
       }
       return text;
     })();
 
+    const context = await contextPromise;
+
     const systemInstruction = `
     Bạn là Trợ lý AI chuyên trách tài liệu nội bộ. 
-    
-    QUY TẮC TUYỆT ĐỐI:
-    1. CHỈ sử dụng thông tin từ phần "Context" bên dưới để trả lời. 
-    2. KHÔNG sử dụng kiến thức bên ngoài hệ thống. Nếu không tìm thấy thông tin phù hợp, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống."
-    3. XỬ LÝ FILE CHƯA ĐỌC ĐƯỢC: Nếu một file có nội dung ghi là "[[STATUS: UNREADABLE...]]", hãy trả lời rõ: "Hệ thống đã scan được tiêu đề file [Tên File] nhưng hiện chưa đọc được nội dung bên trong (có thể do file đang chờ OCR hoặc file lỗi). Bạn có thể mở xem trực tiếp file bên dưới."
-    4. CUNG CẤP LINK FILE: Khi nhắc đến hoặc tìm thấy file liên quan, BẮT BUỘC đính kèm cú pháp [[File: Tên_File_Chính_Xác]] ở cuối câu trả lời để hệ thống hiển thị nút tải xuống/xem.
+    QUY TẮC:
+    1. CHỈ sử dụng thông tin từ phần "Context" bên dưới. 
+    2. Nếu không tìm thấy thông tin, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống."
+    3. Cung cấp link file bằng cú pháp [[File: Tên_File]] nếu nhắc tới file đó.
 
     Context:
     ${context || "Không tìm thấy dữ liệu liên quan."}
     `;
 
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    
     if (selectedModel.includes('gpt')) {
         await queryOpenAI([{ role: 'system', content: systemInstruction }, ...messages], selectedModel, res);
     } else if (selectedModel.includes('llama') || selectedModel.includes('qwen')) {
@@ -171,7 +164,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     res.end();
   } catch (error: any) {
+    console.error("Chat Error:", error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
-    else { res.write(`\n\n[Lỗi hệ thống]: ${error.message}`); res.end(); }
+    else { res.write(`\n\n[Lỗi kết nối AI]: ${error.message}`); res.end(); }
   }
 }

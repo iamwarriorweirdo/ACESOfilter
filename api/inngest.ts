@@ -12,7 +12,7 @@ export const inngest = new Inngest({ id: "hr-rag-app" });
 async function fetchFileBuffer(url: string) {
   const headers = { 'User-Agent': 'Mozilla/5.0' };
   let targetUrl = url.replace('http://', 'https://').trim();
-  const res = await fetch(targetUrl, { headers });
+  const res = await (fetch as any)(targetUrl, { headers });
   if (!res.ok) throw new Error(`Lỗi tải tệp: ${res.status}`);
   return await res.arrayBuffer();
 }
@@ -37,7 +37,7 @@ async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mi
     const apiKey = process.env.OPEN_AI_API_KEY;
     if (!apiKey) throw new Error("Missing OPEN_AI_API_KEY");
 
-    const options: any = {
+    const options = {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
         body: JSON.stringify({
@@ -55,8 +55,8 @@ async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mi
         })
     };
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", options);
-    const data = await res.json() as any;
+    const res = await (fetch as any)("https://api.openai.com/v1/chat/completions", options);
+    const data = await res.json();
     if (data.error) throw new Error(data.error.message);
     return data.choices[0]?.message?.content || "";
 }
@@ -105,14 +105,14 @@ async function callHFInference(buffer: Buffer, modelId: string) {
         reqBody = buffer;
     }
 
-    const options: any = {
+    const options = {
         headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
         method: "POST",
         body: reqBody,
     };
 
-    const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, options);
-    const result = await response.json() as any;
+    const response = await (fetch as any)(`https://api-inference.huggingface.co/models/${modelId}`, options);
+    const result = await response.json();
     
     if (result.error) {
          throw new Error(`HF Error: ${result.error}`);
@@ -185,7 +185,6 @@ const processFileInBackground = inngest.createFunction(
           text = data.text;
           method = "pdf-parse";
         }
-        // Trả về base64 thay vì Buffer để tránh lỗi serialization của Inngest
         return { text, method, bufferBase64: buffer.toString('base64') };
       });
 
@@ -251,7 +250,7 @@ const processFileInBackground = inngest.createFunction(
           
           try {
              if (analysisModel.startsWith('gpt')) {
-                  const opts: any = {
+                  const opts = {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                     body: JSON.stringify({
@@ -260,8 +259,8 @@ const processFileInBackground = inngest.createFunction(
                         response_format: { type: "json_object" }
                     })
                   };
-                  const res = await fetch("https://api.openai.com/v1/chat/completions", opts);
-                  const data = await res.json() as any;
+                  const res = await (fetch as any)("https://api.openai.com/v1/chat/completions", opts);
+                  const data = await res.json();
                   meta = JSON.parse(data.choices[0]?.message?.content || "{}");
              } else if (analysisModel.includes('llama')) {
                 const groqRes = await groq.chat.completions.create({
@@ -290,13 +289,13 @@ const processFileInBackground = inngest.createFunction(
           try {
               let vector: number[] = [];
               if (preferredEmbeddingModel.includes('text-embedding-3') && process.env.OPEN_AI_API_KEY) {
-                   const opts: any = {
+                   const opts = {
                        method: "POST",
                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                        body: JSON.stringify({ model: preferredEmbeddingModel, input: finalResult.text.substring(0, 3000) })
                    };
-                   const res = await fetch("https://api.openai.com/v1/embeddings", opts);
-                   const data = await res.json() as any;
+                   const res = await (fetch as any)("https://api.openai.com/v1/embeddings", opts);
+                   const data = await res.json();
                    vector = data.data?.[0]?.embedding || [];
               } else {
                   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });

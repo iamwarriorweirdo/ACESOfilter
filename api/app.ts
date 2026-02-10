@@ -1,4 +1,3 @@
-
 import { neon } from '@neondatabase/serverless';
 import { v2 as cloudinary } from 'cloudinary';
 import { createClient } from '@supabase/supabase-js';
@@ -45,28 +44,15 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
     const { action, username, password, role, createdBy } = body;
 
     if (action === 'login') {
-        // Cập nhật: Hỗ trợ cả ADMIN_PASS và ADMIN_PASSWORD để tránh lỗi do đặt tên biến môi trường khác nhau
         const sysAdminUser = (process.env.ADMIN_USER || process.env.ADMIN_USERNAME || '').trim();
         const sysAdminPass = (process.env.ADMIN_PASS || process.env.ADMIN_PASSWORD || '').trim();
-        
-        // Lấy dữ liệu người dùng nhập và cắt bỏ khoảng trắng
         const inputUser = (username || '').trim();
         const inputPass = (password || '').trim();
 
-        console.log(`[Login Attempt] User: '${inputUser}' | Env Admin: '${sysAdminUser}'`);
-        console.log(`[Login Debug] Env Pass Set: ${!!sysAdminPass}, Length: ${sysAdminPass?.length || 0}`);
-
-        if (!sysAdminPass) {
-            console.error("CRITICAL: ADMIN_PASSWORD environment variable is NOT SET.");
-            console.log("Current Env Vars keys:", Object.keys(process.env).filter(k => k.startsWith('ADMIN_')));
-        } 
-        // So sánh: Username không phân biệt hoa thường, Password phân biệt hoa thường
+        if (!sysAdminPass) console.error("CRITICAL: ADMIN_PASSWORD environment variable is NOT SET.");
         else if (sysAdminUser && inputUser.toLowerCase() === sysAdminUser.toLowerCase()) {
             if (inputPass === sysAdminPass) {
-                console.log("[Login] Superadmin SUCCESS via Env Var");
                 return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
-            } else {
-                console.warn(`[Login] Superadmin Password Mismatch. Input len: ${inputPass.length}, Expected len: ${sysAdminPass.length}`);
             }
         }
         
@@ -141,6 +127,7 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
     }
     if (method === 'POST') {
         let doc = req.body || {};
+        // DO fix: use doc instead of body as body is undefined in this scope
         if (typeof doc === 'string') { try { doc = JSON.parse(doc); } catch (e) { } }
         if (doc.extractedContent && !doc.name) {
             await sql`UPDATE documents SET extracted_content = ${doc.extractedContent} WHERE id = ${doc.id}`;
@@ -163,7 +150,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
         const docId = body.id;
         if (!docId) return res.status(400).json({ error: 'Missing document ID' });
-        // Cleanups (Cloudinary, Pinecone, etc.) omitted for brevity but should be here
         await sql`DELETE FROM documents WHERE id = ${docId}`;
         return res.status(200).json({ success: true });
     }
@@ -216,7 +202,6 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "Invalid Action" });
 }
 
-// MOVED from backup.ts
 async function handleBackup(req: VercelRequest, res: VercelResponse) {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
     try {
@@ -225,7 +210,7 @@ async function handleBackup(req: VercelRequest, res: VercelResponse) {
             sql`SELECT * FROM users`,
             sql`SELECT * FROM documents`,
             sql`SELECT * FROM app_folders`,
-            sql`SELECT * FROM app_chat_sessions`, // Assuming this table exists
+            sql`SELECT * FROM app_chat_sessions`,
             sql`SELECT * FROM system_settings`
         ]);
         const backupData = {
@@ -241,25 +226,27 @@ async function handleBackup(req: VercelRequest, res: VercelResponse) {
     }
 }
 
-// MOVED from proxy.ts
 async function handleProxy(req: VercelRequest, res: VercelResponse) {
-    const { url } = req.query;
+    const { url, contentType: forcedType } = req.query; 
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
     const ALLOWED = ['cloudinary.com', 'supabase.co', 'res.cloudinary.com'];
     try {
         const parsed = new URL(url);
         if (!ALLOWED.some(d => parsed.hostname.endsWith(d))) return res.status(403).json({ error: "Domain not allowed" });
-        const upstream = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const upstream = await (fetch as any)(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
         if (!upstream.ok) return res.status(upstream.status).json({ error: 'Upstream error' });
+        
         const buffer = Buffer.from(await upstream.arrayBuffer());
-        const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
-        res.setHeader('Content-Type', contentType);
-        res.write(buffer);
-        res.end();
+        
+        // Cố định Content-Disposition là 'inline' để ngăn trình duyệt tự tải xuống
+        const finalType = (forcedType as string) || upstream.headers.get('content-type') || 'application/octet-stream';
+        
+        res.setHeader('Content-Type', finalType);
+        res.setHeader('Content-Disposition', 'inline'); 
+        res.status(200).send(buffer);
     } catch (e: any) { res.status(500).json({ error: e.message }); }
 }
 
-// MOVED from auth-blob.ts
 async function handleAuthBlob(req: VercelRequest, res: VercelResponse) {
     try {
         const jsonResponse = await handleUpload({
@@ -275,7 +262,6 @@ async function handleAuthBlob(req: VercelRequest, res: VercelResponse) {
     } catch (e: any) { return res.status(400).json({ error: e.message }); }
 }
 
-// NEW: Hugging Face OCR (Supported: Florence-2 & Phi-3 Vision)
 async function handleHFOcr(req: VercelRequest, res: VercelResponse) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
     let body = req.body || {};
@@ -286,8 +272,7 @@ async function handleHFOcr(req: VercelRequest, res: VercelResponse) {
     if (!url) return res.status(400).json({ error: "Missing URL" });
 
     try {
-        // Download file
-        const fileRes = await fetch(url);
+        const fileRes = await (fetch as any)(url);
         if (!fileRes.ok) throw new Error("Failed to fetch file");
         const blob = await fileRes.blob();
         const buffer = await blob.arrayBuffer();
@@ -312,8 +297,7 @@ async function handleHFOcr(req: VercelRequest, res: VercelResponse) {
             reqBody = Buffer.from(buffer);
         }
 
-        // Send to HF
-        const hfRes = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+        const hfRes = await (fetch as any)(`https://api-inference.huggingface.co/models/${modelId}`, {
             headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
             method: "POST",
             body: reqBody,
@@ -326,13 +310,11 @@ async function handleHFOcr(req: VercelRequest, res: VercelResponse) {
     }
 }
 
-// MAIN ROUTER
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     let { handler } = req.query;
     if (Array.isArray(handler)) handler = handler[0];
     const action = handler ? String(handler).toLowerCase() : null;
 
-    // Special handling for proxy/backup to avoid JSON double-response
     if (action === 'proxy') return await handleProxy(req, res);
     if (action === 'backup') return await handleBackup(req, res);
 
