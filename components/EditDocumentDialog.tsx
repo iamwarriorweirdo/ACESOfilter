@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Document, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
-// Added CheckCircle to fix the 'Cannot find name CheckCircle' error.
 import { X, FileText, ImageIcon, Eye, FileSpreadsheet, Loader2, Download, FileJson, AlertTriangle, Globe, Monitor, Terminal, Activity, ChevronRight, Clock, CheckCircle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
@@ -37,6 +36,19 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
         let url = `/api/app?handler=proxy&url=${encodeURIComponent(originalUrl.replace('http://', 'https://'))}`;
         if (type) url += `&contentType=${encodeURIComponent(type)}`;
         return url;
+    };
+
+    const handleDownload = () => {
+        if (!document) return;
+        try {
+            const link = window.document.createElement('a');
+            link.href = document.content;
+            link.download = document.name;
+            link.target = '_blank';
+            window.document.body.appendChild(link);
+            link.click();
+            window.document.body.removeChild(link);
+        } catch (error) { console.error(error); }
     };
 
     // CHIẾN LƯỢC: Polling nội dung nếu tệp đang trong quá trình OCR (Inngest)
@@ -124,7 +136,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     if (!isOpen || !document) return null;
 
     const renderJsonContent = (content: string) => {
-        // Trạng thái LOADING DỮ LIỆU LỚN
         if (!content || content.includes("Đang chờ xử lý")) {
             return (
                 <div className="flex flex-col h-full items-center justify-center text-center p-8 bg-[#0d0d0d]">
@@ -185,24 +196,43 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-2 md:p-6 animate-fade-in">
             <div className="bg-card w-full max-w-6xl h-full md:h-[90vh] rounded-xl border border-border flex flex-col shadow-2xl overflow-hidden">
                 <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-muted/20">
-                    <div className="flex items-center gap-3">
-                        <FileText size={20} className="text-primary" />
-                        <h3 className="font-bold text-sm truncate max-w-xs">{document.name}</h3>
+                    <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
+                        <FileText size={20} className="text-primary shrink-0" />
+                        <h3 className="font-bold text-sm truncate">{document.name}</h3>
                     </div>
-                    <div className="flex gap-2">
-                        <button onClick={() => setActiveTab('preview')} className={`px-4 py-1.5 rounded-lg text-xs font-bold ${activeTab === 'preview' ? 'bg-primary text-white' : 'text-muted-foreground'}`}>Preview</button>
-                        <button onClick={() => setActiveTab('extracted')} className={`px-4 py-1.5 rounded-lg text-xs font-bold ${activeTab === 'extracted' ? 'bg-emerald-500 text-white' : 'text-muted-foreground'}`}>JSON Index</button>
-                        <button onClick={onClose} className="p-2 hover:bg-muted rounded-lg"><X size={20}/></button>
+                    <div className="flex gap-2 shrink-0">
+                        <button onClick={() => setActiveTab('preview')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'preview' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-muted-foreground hover:bg-muted'}`}>Preview</button>
+                        <button onClick={() => setActiveTab('extracted')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'extracted' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-muted-foreground hover:bg-muted'}`}>JSON Index</button>
+                        <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-colors"><X size={20}/></button>
                     </div>
                 </div>
-                <div className="flex-1 overflow-hidden relative bg-[#0f0f11]">
+                <div className="flex-1 overflow-hidden relative bg-[#0f0f11] flex flex-col">
                     {activeTab === 'preview' ? (
-                        <div className={`w-full h-full ${viewMode === 'native' ? 'overflow-y-auto bg-white' : ''}`}>
-                            {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0" />}
-                            {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0" />}
-                            {viewMode === 'native' && (
-                                <div className="p-8 w-full max-w-4xl mx-auto bg-white text-black min-h-full prose" dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
-                            )}
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                            {/* Thanh Tiêu đề Đầy đủ & Nút Tải xuống */}
+                            <div className="px-8 py-6 border-b border-white/5 bg-white/5 shrink-0">
+                                <h2 className="text-xl md:text-2xl font-black text-foreground mb-4 leading-tight">{document.name}</h2>
+                                <button 
+                                    onClick={handleDownload}
+                                    className="flex items-center gap-2 px-6 py-2.5 bg-primary/20 hover:bg-primary text-primary hover:text-white border border-primary/30 rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-lg active:scale-95"
+                                >
+                                    <Download size={16} /> Tải xuống tài liệu
+                                </button>
+                            </div>
+                            
+                            {/* Vùng hiển thị nội dung tệp */}
+                            <div className={`flex-1 overflow-y-auto ${viewMode === 'native' ? 'bg-white' : ''}`}>
+                                {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0 min-h-[500px]" />}
+                                {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0 min-h-[500px]" />}
+                                {viewMode === 'native' && (
+                                    <div className="p-8 w-full max-w-4xl mx-auto bg-white text-black min-h-full prose dark:prose-invert" dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
+                                )}
+                                {isProcessing && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm z-10">
+                                        <Loader2 className="w-10 h-10 animate-spin text-primary" />
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     ) : (
                         renderJsonContent(localContent)
