@@ -100,11 +100,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             <option value="gemini-3-flash-preview">Gemini 3.0 Flash (Recommended)</option>
                                             <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
                                         </optgroup>
-                                        <optgroup label="Hugging Face (Vision VL)">
-                                            <option value="Qwen/Qwen3-VL-235B-A22B-Thinking">Qwen3-VL-235B Thinking (SOTA)</option>
-                                            <option value="microsoft/Florence-2-base">Florence-2 Base</option>
-                                            <option value="microsoft/phi-3-vision-128k-instruct">Phi-3 Vision Instruct</option>
-                                        </optgroup>
                                         <optgroup label="OpenAI">
                                             <option value="gpt-4o-mini">GPT-4o Mini (Vision)</option>
                                         </optgroup>

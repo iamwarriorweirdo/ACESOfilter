@@ -94,49 +94,6 @@ async function callGroqVision(bufferBase64: string, model: string = 'llama-3.2-1
     return chatCompletion.choices[0]?.message?.content || "";
 }
 
-async function callHFInference(buffer: Buffer, modelId: string) {
-    const hfKey = process.env.HUGGING_FACE_API_KEY;
-    if (!hfKey) throw new Error("Missing HUGGING_FACE_API_KEY");
-    
-    const lowId = modelId.toLowerCase();
-    const isVision = lowId.includes('vision') || lowId.includes('vl') || lowId.includes('phi-3') || lowId.includes('qwen');
-    
-    let reqBody: any;
-    let contentType = "application/octet-stream";
-
-    if (isVision) {
-        const base64Image = buffer.toString('base64');
-        reqBody = JSON.stringify({
-            inputs: {
-                image: base64Image,
-                prompt: `<|user|>\n<|image_1|>\nOCR Task: Extract ALL text from this image verbatim. Return ONLY the text content.\n<|end|>\n<|assistant|>\n`
-            },
-            parameters: { max_new_tokens: 2000 }
-        });
-        contentType = "application/json";
-    } else {
-        reqBody = buffer;
-    }
-
-    const options = {
-        headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
-        method: "POST",
-        body: reqBody,
-    };
-
-    const response = await (fetch as any)(`https://api-inference.huggingface.co/models/${modelId}`, options);
-    const result = await response.json();
-    
-    if (result.error) {
-         throw new Error(`HF Error: ${result.error}`);
-    }
-
-    if (Array.isArray(result) && result[0]?.generated_text) return result[0].generated_text;
-    if (result.generated_text) return result.generated_text;
-    
-    return typeof result === 'string' ? result : JSON.stringify(result);
-}
-
 async function extractDocxRawTextFallback(buffer: Buffer): Promise<string> {
   try {
     const zip = await JSZip.loadAsync(buffer);
@@ -222,10 +179,6 @@ const processFileInBackground = inngest.createFunction(
                  await updateDbStatus(docId, `Sử dụng Groq Vision (${preferredOcrModel})...`);
                  text = await callGroqVision(bufferBase64, preferredOcrModel);
                  method = "groq-vision";
-             } else if (preferredOcrModel.includes('/') || preferredOcrModel.includes('qwen') || preferredOcrModel.includes('phi-3')) {
-                 await updateDbStatus(docId, `Sử dụng HF Inference: ${preferredOcrModel}...`);
-                 text = await callHFInference(Buffer.from(bufferBase64, 'base64'), preferredOcrModel);
-                 method = "hf-vision-ocr";
              } else {
                 await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
