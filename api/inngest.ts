@@ -196,8 +196,8 @@ const processFileInBackground = inngest.createFunction(
         // B. Intelligent OCR Fallback
         const isAIRequired = !text || text.trim().length < 20 || 
                              preferredOcrModel.includes('vision') || 
-                             preferredOcrModel.includes('gpt') ||
-                             preferredOcrModel.includes('vl') ||
+                             preferredOcrModel.includes('gpt') || 
+                             preferredOcrModel.includes('vl') || 
                              preferredOcrModel.includes('qwen');
 
         if (isAIRequired) {
@@ -313,7 +313,6 @@ const processFileInBackground = inngest.createFunction(
                vector = data.data?.[0]?.embedding || [];
           } else {
               const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
-              // Use Safe Fallback
               vector = await getEmbeddingWithFallback(ai, textToEmbed.substring(0, 3000), preferredEmbeddingModel);
           }
 
@@ -346,7 +345,7 @@ const deleteFileInBackground = inngest.createFunction(
                      await pc.index(process.env.PINECONE_INDEX_NAME).deleteMany([docId]);
                  } catch (e: any) { 
                      // Safe ignore 404
-                     if (e.name === 'PineconeNotFoundError' || e.message?.includes('404') || e.message?.includes('NotFound')) {
+                     if (e.name === 'PineconeNotFoundError' || e.message?.includes('404') || e.message?.includes('NotFound') || e.message?.includes('not found')) {
                          console.log("Pinecone: Vector not found or already deleted, skipping.");
                      } else {
                          console.error("Pinecone delete error", e);

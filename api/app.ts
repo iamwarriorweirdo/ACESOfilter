@@ -154,18 +154,27 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         const docId = body.id;
         if (!docId) return res.status(400).json({ error: 'Missing document ID' });
 
-        // CLEANUP: Fetch URL before deleting to remove from Cloudinary/Supabase/Pinecone
-        const rows = await sql`SELECT id, url, content FROM documents WHERE id = ${docId}`;
-        if (rows.length > 0) {
-            const target = rows[0];
-            await inngest.send({ 
-                name: "app/delete.file", 
-                data: { docId: target.id, url: target.url || target.content } 
-            });
-        }
+        try {
+            // CLEANUP: Fetch URL before deleting to remove from Cloudinary/Supabase/Pinecone
+            // Explicitly selecting url and content to ensure we have the storage link
+            const rows = await sql`SELECT id, url, content FROM documents WHERE id = ${docId}`;
+            if (rows.length > 0) {
+                const target = rows[0];
+                const targetUrl = target.url || target.content;
+                if (targetUrl) {
+                    await inngest.send({ 
+                        name: "app/delete.file", 
+                        data: { docId: target.id, url: targetUrl } 
+                    });
+                }
+            }
 
-        await sql`DELETE FROM documents WHERE id = ${docId}`;
-        return res.status(200).json({ success: true });
+            await sql`DELETE FROM documents WHERE id = ${docId}`;
+            return res.status(200).json({ success: true });
+        } catch (e: any) {
+            console.error("Delete error:", e);
+            return res.status(500).json({ error: `Delete failed: ${e.message}` });
+        }
     }
     return res.status(405).end();
 }
@@ -249,21 +258,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (action === 'upload-supabase') return await handleUploadSupabase(req, res);
         
         if (action === 'sign-cloudinary') {
-            let cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
-            let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
-            let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
-            
-            // FIX: Return 404/400 instead of 500 to allow smooth fallback on client
-            if (!cloudName || !apiKey || !apiSecret) {
-                return res.status(400).json({ 
-                    error: "Cloudinary not configured", 
-                    fallback: true 
-                });
+            try {
+                let cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+                let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
+                let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
+                
+                // FIX: Return 404/400 instead of 500 to allow smooth fallback on client
+                if (!cloudName || !apiKey || !apiSecret) {
+                    return res.status(400).json({ 
+                        error: "Cloudinary not configured", 
+                        fallback: true 
+                    });
+                }
+                
+                const timestamp = Math.round(new Date().getTime() / 1000);
+                const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
+                return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
+            } catch (e: any) {
+                console.error("Cloudinary Sign Error:", e);
+                return res.status(400).json({ error: "Cloudinary config error", fallback: true });
             }
-            
-            const timestamp = Math.round(new Date().getTime() / 1000);
-            const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
-            return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
         }
         if (action === 'trigger-ingest') {
              let body = req.body || {};
