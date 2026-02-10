@@ -73,7 +73,7 @@ async function callGroqVision(bufferBase64: string, model: string = 'llama-3.2-1
                 content: [
                     { type: "text", text: "Extract text from this image." },
                     { type: "image_url", image_url: { url: `data:image/jpeg;base64,${bufferBase64}` } },
-                ],
+                ] as any,
             },
         ],
         model: model,
