@@ -5,6 +5,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Inngest } from 'inngest';
 import { handleUpload } from '@vercel/blob/client';
 import { Buffer } from 'node:buffer';
+import { Pinecone } from '@pinecone-database/pinecone';
 
 const inngest = new Inngest({ id: "hr-rag-app" });
 
@@ -255,6 +256,57 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
     } catch (err: any) { return res.status(500).json({ error: `Supabase Critical Error: ${err.message}` }); }
 }
 
+async function handleSync(req: VercelRequest, res: VercelResponse) {
+    const sql = await getSql();
+    try {
+        if (!process.env.PINECONE_API_KEY || !process.env.PINECONE_INDEX_NAME) {
+            return res.status(400).json({ error: "Pinecone credentials missing." });
+        }
+        
+        const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
+        const index = pc.index(process.env.PINECONE_INDEX_NAME);
+
+        // 1. Get all valid IDs from DB
+        const dbDocs = await sql`SELECT id FROM documents`;
+        const dbIdSet = new Set(dbDocs.map((d: any) => d.id));
+
+        // 2. Scan Pinecone for orphans (Iterate via listPaginated)
+        // Note: For large DBs this might be slow, but suitable for admin trigger.
+        let pineconeIds: string[] = [];
+        let pageToken: string | undefined = undefined;
+        let orphans: string[] = [];
+
+        do {
+            const listResults = await index.listPaginated({ limit: 100, paginationToken: pageToken });
+            if (listResults.vectors) {
+                for (const v of listResults.vectors) {
+                    if (v.id && !dbIdSet.has(v.id)) {
+                        orphans.push(v.id);
+                    }
+                }
+            }
+            pageToken = listResults.pagination?.next;
+        } while (pageToken);
+
+        // 3. Delete orphans
+        if (orphans.length > 0) {
+            // Delete in batches of 1000
+            for (let i = 0; i < orphans.length; i += 1000) {
+                 await index.deleteMany(orphans.slice(i, i + 1000));
+            }
+        }
+        
+        return res.status(200).json({ 
+            success: true, 
+            message: `Synced. Deleted ${orphans.length} ghost vectors.`,
+            orphansFound: orphans.length 
+        });
+
+    } catch (e: any) {
+        return res.status(500).json({ error: `Sync failed: ${e.message}` });
+    }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     let { handler } = req.query;
     if (Array.isArray(handler)) handler = handler[0];
@@ -268,6 +320,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (action === 'files') return await handleFiles(req, res);
         if (action === 'folders') return await handleFolders(req, res);
         if (action === 'upload-supabase') return await handleUploadSupabase(req, res);
+        if (action === 'sync') return await handleSync(req, res);
         
         if (action === 'sign-cloudinary') {
             try {

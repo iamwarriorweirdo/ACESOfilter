@@ -30,7 +30,6 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
-        // Log the error but do not try legacy model 001 which causes 404s
         console.error("Gemini embedding failed:", e.message);
         return [];
     }
@@ -77,14 +76,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const lastMessage = messages?.[messages.length - 1];
     if (!lastMessage) return res.status(400).json({ error: "No messages" });
 
-    // Lọc model name: Tuyệt đối không để giá trị "auto" lọt vào SDK
     let inputModel = config?.aiModel || config?.chatModel || 'gemini-3-flash-preview';
     let selectedModel = 'gemini-3-flash-preview';
     
     if (inputModel.includes('gpt')) selectedModel = inputModel;
     else if (inputModel.includes('llama') || inputModel.includes('qwen')) selectedModel = inputModel;
     else if (inputModel.includes('gemini')) selectedModel = inputModel;
-    // Fallback nếu model là "auto" hoặc bất kỳ chuỗi lạ nào
     else selectedModel = 'gemini-3-flash-preview';
 
     const embeddingModel = config?.embeddingModel || 'text-embedding-004';
@@ -109,23 +106,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return raw;
       };
 
-      const [dbDocs, vector] = await Promise.all([
-          sql`SELECT name, extracted_content FROM documents WHERE name ILIKE ${`%${userQuery}%`} OR extracted_content ILIKE ${`%${userQuery}%`} LIMIT 3`.catch(() => []),
-          getSafeEmbedding(ai, userQuery, embeddingModel)
-      ]);
+      // CRITICAL FIX: Fetch ALL valid document names from NeonDB to validate Pinecone results
+      const validDocsPromise = sql`SELECT name, extracted_content FROM documents`; 
+      const vectorPromise = getSafeEmbedding(ai, userQuery, embeddingModel);
 
-      for (const d of dbDocs) {
+      const [allDocs, vector] = await Promise.all([validDocsPromise, vectorPromise]);
+      
+      // Create a Set of valid filenames for O(1) lookup
+      const validFileNames = new Set(allDocs.map(d => d.name));
+
+      // 1. Keyword Search (Native Postgres ILIKE) - Already safe because it queries DB
+      // Filter the query to only current DB records
+      const keywordMatches = allDocs.filter((d: any) => 
+          d.name.toLowerCase().includes(userQuery.toLowerCase()) || 
+          (d.extracted_content && d.extracted_content.toLowerCase().includes(userQuery.toLowerCase()))
+      ).slice(0, 3); // Manual limit after filter
+
+      for (const d of keywordMatches) {
           seen.add(d.name);
           text += `File: "${d.name}"\nContent: ${processContent(d.extracted_content).substring(0, 3000)}\n---\n`;
       }
 
+      // 2. Semantic Search (Pinecone) with VALIDATION
       if (text.length < 4000 && vector.length > 0) {
           try {
-              const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
+              const queryResponse = await index.query({ vector, topK: 5, includeMetadata: true }); // Fetch more to allow for filtering
               for (const m of queryResponse.matches) {
                   const fname = m.metadata?.filename as string;
-                  if (fname && !seen.has(fname)) {
+                  
+                  // CRITICAL CHECK: Only include if file exists in NeonDB
+                  if (fname && validFileNames.has(fname) && !seen.has(fname)) {
                       text += `File: "${fname}"\nContent: ${String(m.metadata?.text || "").substring(0, 2000)}\n---\n`;
+                      seen.add(fname);
+                  } else if (fname && !validFileNames.has(fname)) {
+                      console.log(`[RAG Filter] Skipped ghost file: ${fname} (found in Pinecone but missing in DB)`);
                   }
               }
           } catch (pe) { console.error("Pinecone query error", pe); }
@@ -139,7 +153,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 QUY TẮC:
 1. CHỈ sử dụng thông tin từ phần "Context" bên dưới.
 2. Nếu không có trong Context, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống."
-3. Cung cấp link file bằng cú pháp [[File: Tên_File]] nếu nhắc tới file đó.
+3. Cung cấp link file bằng cú pháp [[File: Tên_File]] nếu nhắc tới file đó. Tuyệt đối KHÔNG bịa ra tên file không có trong Context.
 
 Context:
 ${context || "Không tìm thấy dữ liệu liên quan."}`;
@@ -155,7 +169,6 @@ ${context || "Không tìm thấy dữ liệu liên quan."}`;
         });
         for await (const chunk of strRes) { res.write(chunk.choices[0]?.delta?.content || ""); }
     } else {
-        // Gemini Models
         const chatStream = await ai.models.generateContentStream({
             model: selectedModel,
             contents: messages.map((m: any) => ({

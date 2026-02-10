@@ -19,6 +19,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
     const [hasChanges, setHasChanges] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isBackingUp, setIsBackingUp] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
 
     useEffect(() => {
         setLocalConfig(config);
@@ -45,6 +46,24 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
             window.location.href = '/api/app?handler=backup';
         } finally {
             setTimeout(() => setIsBackingUp(false), 2000);
+        }
+    };
+
+    const handleSyncDatabase = async () => {
+        if (!confirm("Hành động này sẽ xóa vĩnh viễn các Vector trong Pinecone không còn khớp với Database. Bạn có chắc không?")) return;
+        setIsSyncing(true);
+        try {
+            const res = await fetch('/api/app?handler=sync');
+            const data = await res.json();
+            if (data.success) {
+                alert(`Đồng bộ thành công! Đã dọn dẹp ${data.orphansFound} vector rác.`);
+            } else {
+                alert("Đồng bộ thất bại: " + data.error);
+            }
+        } catch (e: any) {
+            alert("Lỗi kết nối: " + e.message);
+        } finally {
+            setIsSyncing(false);
         }
     };
 
@@ -228,14 +247,14 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                     <DownloadCloud size={16} className="text-muted-foreground" />
                                 </button>
 
-                                <button onClick={() => alert("Chức năng đồng bộ đang được kích hoạt...")} className="w-full flex items-center justify-between p-4 rounded-2xl bg-muted/30 hover:bg-emerald-500/10 border border-border hover:border-emerald-500/20 transition-all group">
+                                <button onClick={handleSyncDatabase} disabled={isSyncing} className="w-full flex items-center justify-between p-4 rounded-2xl bg-muted/30 hover:bg-emerald-500/10 border border-border hover:border-emerald-500/20 transition-all group">
                                     <div className="flex items-center gap-3">
                                         <div className="p-2 rounded-lg bg-background border border-border group-hover:bg-emerald-500 group-hover:text-white transition-all">
-                                            <RefreshCw size={16} />
+                                            {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
                                         </div>
                                         <div className="text-left">
                                             <div className="text-xs font-bold">Đồng bộ Database</div>
-                                            <div className="text-[10px] text-muted-foreground">Dọn dẹp Vector & Metadata</div>
+                                            <div className="text-[10px] text-muted-foreground">Dọn dẹp Vector rác (Ghost Data) trong Pinecone</div>
                                         </div>
                                     </div>
                                     <ChevronRight size={16} className="text-muted-foreground" />

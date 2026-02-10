@@ -197,7 +197,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 </div>
                 <div className="flex-1 overflow-hidden relative bg-[#0f0f11]">
                     {activeTab === 'preview' ? (
-                        <div className="w-full h-full">
+                        <div className={`w-full h-full ${viewMode === 'native' ? 'overflow-y-auto bg-white' : ''}`}>
                             {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0" />}
                             {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0" />}
                             {viewMode === 'native' && (
