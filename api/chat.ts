@@ -30,30 +30,8 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
-        // 3. Try Gemini Fallback (001) if 404 or other errors
-        console.warn("Gemini 004 embedding failed, trying fallback...", e.message);
-        try {
-            const res = await ai.models.embedContent({
-                model: "embedding-001",
-                contents: [{ parts: [{ text }] }]
-            });
-            return res.embeddings?.[0]?.values || [];
-        } catch (e2) {
-            console.error("Gemini embedding fallback also failed", e2);
-        }
-
-        // 4. Last Resort: OpenAI Fallback (if key exists but model wasn't preferred)
-        if (openAiKey) {
-             try {
-                 const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
-                     method: "POST",
-                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openAiKey}` },
-                     body: JSON.stringify({ model: "text-embedding-3-small", input: text })
-                 });
-                 const data = await openAiRes.json();
-                 return data.data?.[0]?.embedding || [];
-             } catch (oe) { }
-        }
+        // Log the error but do not try legacy model 001 which causes 404s
+        console.error("Gemini embedding failed:", e.message);
         return [];
     }
 }

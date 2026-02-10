@@ -28,19 +28,10 @@ async function getEmbeddingWithFallback(ai: GoogleGenAI, text: string, primaryMo
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
-        console.warn(`Embedding failed with ${primaryModel}, trying fallback...`, e.message);
-        try {
-            // Fallback to older model if 004 fails
-            const fallbackModel = 'embedding-001';
-            const res = await ai.models.embedContent({
-                model: fallbackModel,
-                contents: { parts: [{ text }] }
-            });
-            return res.embeddings?.[0]?.values || [];
-        } catch (e2) {
-            console.error("Embedding fallback also failed", e2);
-            return [];
-        }
+        console.error(`Embedding failed with ${primaryModel}:`, e.message);
+        // Deprecated fallback to 'embedding-001' removed as it causes 404s.
+        // If the primary model fails, we return empty to allow the process to complete without crashing.
+        return [];
     }
 }
 
@@ -319,12 +310,17 @@ const processFileInBackground = inngest.createFunction(
               vector = await getEmbeddingWithFallback(ai, textToEmbed.substring(0, 3000), preferredEmbeddingModel);
           }
 
+          let status = 'completed';
           if (vector.length > 0 && process.env.PINECONE_API_KEY) {
               const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
               await pc.index(process.env.PINECONE_INDEX_NAME!).upsert([{ id: docId, values: vector, metadata: { filename: fileName, text: textToEmbed.substring(0, 4000) } }] as any);
+          } else {
+             // If vector generation failed, we note it in status but keep the file searchable by keyword
+             status = 'completed_no_vector';
+             console.warn(`Vector generation failed or no Pinecone key for ${docId}`);
           }
           
-          await sql`UPDATE documents SET status = 'completed' WHERE id = ${docId}`;
+          await sql`UPDATE documents SET status = ${status} WHERE id = ${docId}`;
       });
 
     } catch (e: any) {
