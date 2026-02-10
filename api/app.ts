@@ -100,14 +100,12 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
     const method = req.method?.toUpperCase();
     if (method === 'GET') {
         const { id } = req.query;
-        // CHIẾN LƯỢC 1: Data Filtering - Nếu lấy chi tiết 1 file thì mới trả về content lớn
         if (id) {
             const rows = await sql`SELECT id, name, extracted_content FROM documents WHERE id = ${id}`;
             if (rows.length === 0) return res.status(404).json({ error: "File not found" });
             return res.status(200).json(rows[0]);
         }
 
-        // CHIẾN LƯỢC 1: Data Filtering - Trả về danh sách rút gọn (không có extracted_content)
         const docs = await sql`SELECT id, name, type, content, url, size, upload_date, folder_id, uploaded_by, status FROM documents ORDER BY upload_date DESC`;
         const mappedDocs = docs.map((d: any) => ({
             id: d.id,
@@ -120,7 +118,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
             status: d.status || 'pending',
             folderId: d.folder_id || null,
             uploadedBy: d.uploaded_by || 'system'
-            // Đã loại bỏ extracted_content ở đây để payload nhẹ
         }));
         return res.status(200).json(mappedDocs);
     }
@@ -129,7 +126,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         let doc = req.body || {};
         if (typeof doc === 'string') { try { doc = JSON.parse(doc); } catch (e) { } }
         
-        // Cập nhật riêng content (Dùng khi Inngest xong)
         if (doc.extractedContent && !doc.name) {
             await sql`UPDATE documents SET extracted_content = ${doc.extractedContent} WHERE id = ${doc.id}`;
             return res.status(200).json({ success: true });
@@ -155,31 +151,35 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         if (!docId) return res.status(400).json({ error: 'Missing document ID' });
 
         try {
-            // CLEANUP: Fetch URL before deleting to remove from Cloudinary/Supabase/Pinecone
-            // Explicitly selecting url and content to ensure we have the storage link
-            const rows = await sql`SELECT id, url, content FROM documents WHERE id = ${docId}`;
+            // STEP 1: Fetch URL to trigger cleanup (Supabase/Cloudinary/Pinecone)
+            const rows = await sql`SELECT id, url, content, name FROM documents WHERE id = ${docId}`;
+            
             if (rows.length > 0) {
                 const target = rows[0];
                 const targetUrl = target.url || target.content;
+                
                 if (targetUrl) {
+                    // console.log("Triggering cleanup for:", targetUrl);
                     await inngest.send({ 
                         name: "app/delete.file", 
                         data: { docId: target.id, url: targetUrl } 
                     });
+                } else {
+                    console.warn(`No URL found for doc ${docId}, skipping storage cleanup.`);
                 }
             }
 
+            // STEP 2: Always delete from Database
             await sql`DELETE FROM documents WHERE id = ${docId}`;
             return res.status(200).json({ success: true });
         } catch (e: any) {
-            console.error("Delete error:", e);
+            console.error("Delete handler error:", e);
             return res.status(500).json({ error: `Delete failed: ${e.message}` });
         }
     }
     return res.status(405).end();
 }
 
-// ... giữ các hàm handle khác giữ nguyên (handleFolders, handleProxy, v.v.)
 async function handleFolders(req: VercelRequest, res: VercelResponse) {
     const sql = await getSql();
     let body = req.body || {};
@@ -209,14 +209,26 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleProxy(req: VercelRequest, res: VercelResponse) {
-    const { url, contentType: forcedType } = req.query; 
+    let { url, contentType: forcedType } = req.query; 
+    if (Array.isArray(url)) url = url[0]; // Handle array param
+    
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
+    
     const ALLOWED = ['cloudinary.com', 'supabase.co', 'res.cloudinary.com'];
     try {
         const parsed = new URL(url);
         if (!ALLOWED.some(d => parsed.hostname.endsWith(d))) return res.status(403).json({ error: "Domain not allowed" });
-        const upstream = await (fetch as any)(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        if (!upstream.ok) return res.status(upstream.status).json({ error: 'Upstream error' });
+        
+        // IMPORTANT: Ensure the URL is properly encoded (handling spaces, etc.)
+        const targetUrl = parsed.toString();
+
+        const upstream = await (fetch as any)(targetUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (!upstream.ok) {
+            // Try to get text body to debug
+            const errText = await upstream.text().catch(() => 'Unknown upstream error');
+            return res.status(upstream.status).json({ error: `Upstream error (${upstream.status}): ${errText.substring(0, 200)}` });
+        }
+
         const buffer = Buffer.from(await upstream.arrayBuffer());
         const finalType = (forcedType as string) || upstream.headers.get('content-type') || 'application/octet-stream';
         res.setHeader('Content-Type', finalType);
@@ -263,7 +275,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
                 let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
                 
-                // FIX: Return 404/400 instead of 500 to allow smooth fallback on client
                 if (!cloudName || !apiKey || !apiSecret) {
                     return res.status(400).json({ 
                         error: "Cloudinary not configured", 

@@ -12,8 +12,11 @@ export const inngest = new Inngest({ id: "hr-rag-app" });
 
 // Helper: Safely get Env variables (Handle standard and Vercel naming conventions)
 function getEnv(key: string): string | undefined {
-    // Check direct key, uppercase, or typical Vercel prefixes
-    return process.env[key] || process.env[key.toUpperCase()] || process.env[`NEXT_PUBLIC_${key}`];
+    // Priority: Direct > Uppercase > NEXT_PUBLIC_ > React App prefix (just in case)
+    return process.env[key] || 
+           process.env[key.toUpperCase()] || 
+           process.env[`NEXT_PUBLIC_${key}`] ||
+           process.env[`NEXT_PUBLIC_${key.toUpperCase()}`];
 }
 
 // Helper: Embed with Fallback
@@ -377,9 +380,9 @@ const deleteFileInBackground = inngest.createFunction(
             } 
             // Handle Supabase
             else if (url.includes('supabase.co')) {
-                // FORCE READ ENV
-                const sbUrl = getEnv('SUPABASE_URL') || process.env.SUPABASE_URL;
-                const sbKey = getEnv('SUPABASE_SERVICE_ROLE_KEY') || process.env.SUPABASE_SERVICE_ROLE_KEY;
+                // FORCE READ ENV with improved helper
+                const sbUrl = getEnv('SUPABASE_URL');
+                const sbKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 
                 if (sbUrl && sbKey) {
                     try {
@@ -389,7 +392,10 @@ const deleteFileInBackground = inngest.createFunction(
                         const pathParts = urlObj.pathname.split('/documents/');
                         if (pathParts.length > 1) {
                             const filePath = decodeURIComponent(pathParts[1]);
-                            await supabase.storage.from('documents').remove([filePath]);
+                            console.log(`[Supabase] Deleting file: ${filePath}`);
+                            const { error } = await supabase.storage.from('documents').remove([filePath]);
+                            if (error) console.error("[Supabase] Delete failed:", error);
+                            else console.log("[Supabase] Deleted successfully.");
                         }
                     } catch (e) { console.error("Supabase delete error", e); }
                 } else {
