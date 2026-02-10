@@ -1,3 +1,4 @@
+
 // DO fix: use correct import and property based text access for @google/genai
 import { GoogleGenAI } from "@google/genai";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
@@ -36,8 +37,8 @@ async function retrieveContext(state: typeof AgentState.State) {
 
         // Semantic Search
         if (contextText.length < 1000) {
-            // DO fix: use GoogleGenAI instead of GoogleGenerativeAI
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+            // Fix: Always use named parameter for apiKey and use it directly from process.env.API_KEY
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const result = await ai.models.embedContent({
                 model: "text-embedding-004",
                 contents: [{ parts: [{ text: query }] }]
@@ -56,8 +57,8 @@ async function retrieveContext(state: typeof AgentState.State) {
 }
 
 async function generateAnswer(state: typeof AgentState.State) {
-    // DO fix: use GoogleGenAI instead of GoogleGenerativeAI
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+    // Fix: Always use named parameter for apiKey and use it directly from process.env.API_KEY
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
     const prompt = `Bạn là Trợ lý HR AI cấp cao. 
     Dựa trên dữ liệu tài liệu sau:

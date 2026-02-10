@@ -6,13 +6,16 @@ import Groq from "groq-sdk";
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'text-embedding-004') {
-    if (configEmbeddingModel.includes('text-embedding-3') && process.env.OPENAI_API_KEY) {
+    // Ưu tiên dùng biến OPEN_AI_API_KEY mới từ screenshot
+    const openAiKey = process.env.OPEN_AI_API_KEY;
+    
+    if (configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
          try {
              const openAiRes = await fetch("https://api.openai.com/v1/embeddings", {
                  method: "POST",
                  headers: { 
                      "Content-Type": "application/json", 
-                     "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` 
+                     "Authorization": `Bearer ${openAiKey}` 
                  },
                  body: JSON.stringify({ model: configEmbeddingModel, input: text })
              });
@@ -29,11 +32,11 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
-        if (process.env.OPENAI_API_KEY) {
+        if (openAiKey) {
              try {
                  const openAiRes = await fetch("https://api.openai.com/v1/embeddings", {
                      method: "POST",
-                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${openAiKey}` },
                      body: JSON.stringify({ model: "text-embedding-3-small", input: text })
                  });
                  const data = await openAiRes.json();
@@ -45,8 +48,8 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
 }
 
 async function queryOpenAI(messages: any[], model: string, res: VercelResponse) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
+    const apiKey = process.env.OPEN_AI_API_KEY;
+    if (!apiKey) throw new Error("Missing OPEN_AI_API_KEY");
 
     const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",

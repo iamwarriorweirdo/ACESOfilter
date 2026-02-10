@@ -34,10 +34,10 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
 }
 
 async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mini') {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("Missing OPENAI_API_KEY");
+    const apiKey = process.env.OPEN_AI_API_KEY;
+    if (!apiKey) throw new Error("Missing OPEN_AI_API_KEY");
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const options: any = {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
         body: JSON.stringify({
@@ -53,7 +53,9 @@ async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mi
             ],
             max_tokens: 2000
         })
-    } as any);
+    };
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", options);
     const data = await res.json();
     if (data.error) throw new Error(data.error.message);
     return data.choices[0]?.message?.content || "";
@@ -83,17 +85,18 @@ async function callHFInference(buffer: Buffer, modelId: string) {
     const hfKey = process.env.HUGGING_FACE_API_KEY;
     if (!hfKey) throw new Error("Missing HUGGING_FACE_API_KEY");
     
-    const isPhi3 = modelId.toLowerCase().includes('phi-3') || modelId.toLowerCase().includes('vision');
+    const lowId = modelId.toLowerCase();
+    const isVision = lowId.includes('vision') || lowId.includes('vl') || lowId.includes('phi-3') || lowId.includes('qwen');
     
     let reqBody: any;
     let contentType = "application/octet-stream";
 
-    if (isPhi3) {
+    if (isVision) {
         const base64Image = buffer.toString('base64');
         reqBody = JSON.stringify({
             inputs: {
                 image: base64Image,
-                prompt: `<|user|>\n<|image_1|>\nOCR Task: Extract ALL text from this image verbatim. Do not summarize. Just return the text content.\n<|end|>\n<|assistant|>\n`
+                prompt: `<|user|>\n<|image_1|>\nOCR Task: Extract ALL text from this image verbatim. Return ONLY the text content.\n<|end|>\n<|assistant|>\n`
             },
             parameters: { max_new_tokens: 2000 }
         });
@@ -102,11 +105,13 @@ async function callHFInference(buffer: Buffer, modelId: string) {
         reqBody = buffer;
     }
 
-    const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
+    const options: any = {
         headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
         method: "POST",
-        body: reqBody as any,
-    } as any);
+        body: reqBody,
+    };
+
+    const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, options);
     
     const result = await response.json();
     
@@ -136,7 +141,7 @@ const processFileInBackground = inngest.createFunction(
   { event: "app/process.file" },
   async ({ event, step }) => {
     const { url, fileName, docId } = event.data;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
     try {
@@ -166,7 +171,7 @@ const processFileInBackground = inngest.createFunction(
         } else if (lowName.endsWith('.docx')) {
           try {
             const mammoth = await import('mammoth');
-            const extractor = mammoth.default || mammoth;
+            const extractor = mammoth.default || (mammoth as any);
             const res = await extractor.extractRawText({ buffer });
             text = res.value;
             method = "docx-mammoth";
@@ -175,8 +180,9 @@ const processFileInBackground = inngest.createFunction(
             method = "docx-jszip";
           }
         } else if (lowName.endsWith('.pdf')) {
+          // @ts-ignore
           const pdfParse = await import('pdf-parse');
-          const pdfExtractor = pdfParse.default || pdfParse;
+          const pdfExtractor = pdfParse.default || (pdfParse as any);
           const data = await pdfExtractor(buffer);
           text = data.text;
           method = "pdf-parse";
@@ -190,7 +196,9 @@ const processFileInBackground = inngest.createFunction(
 
         const isAIRequired = !text || text.trim().length < 20 || 
                              preferredOcrModel.includes('vision') || 
-                             preferredOcrModel.includes('gpt');
+                             preferredOcrModel.includes('gpt') ||
+                             preferredOcrModel.includes('vl') ||
+                             preferredOcrModel.includes('qwen');
 
         if (isAIRequired) {
           try {
@@ -202,6 +210,10 @@ const processFileInBackground = inngest.createFunction(
                  await updateDbStatus(docId, `Sử dụng Groq Vision (${preferredOcrModel})...`);
                  text = await callGroqVision(parseResult.bufferBase64, preferredOcrModel);
                  method = "groq-vision";
+             } else if (preferredOcrModel.includes('/') || preferredOcrModel.includes('qwen') || preferredOcrModel.includes('phi-3')) {
+                 await updateDbStatus(docId, `Sử dụng HF Inference: ${preferredOcrModel}...`);
+                 text = await callHFInference(Buffer.from(parseResult.bufferBase64, 'base64'), preferredOcrModel);
+                 method = "hf-vision-ocr";
              } else {
                 await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
                 const res = await ai.models.generateContent({
@@ -238,15 +250,16 @@ const processFileInBackground = inngest.createFunction(
           
           try {
              if (analysisModel.startsWith('gpt')) {
-                  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                  const options: any = {
                     method: "POST",
-                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                     body: JSON.stringify({
                         model: analysisModel,
                         messages: [{ role: "user", content: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }],
                         response_format: { type: "json_object" }
                     })
-                } as any);
+                  };
+                const res = await fetch("https://api.openai.com/v1/chat/completions", options);
                 const data = await res.json();
                 meta = JSON.parse(data.choices[0]?.message?.content || "{}");
              } else if (analysisModel.includes('llama')) {
@@ -274,12 +287,13 @@ const processFileInBackground = inngest.createFunction(
 
           try {
               let vector: number[] = [];
-              if (preferredEmbeddingModel.includes('text-embedding-3') && process.env.OPENAI_API_KEY) {
-                   const res = await fetch("https://api.openai.com/v1/embeddings", {
+              if (preferredEmbeddingModel.includes('text-embedding-3') && process.env.OPEN_AI_API_KEY) {
+                   const options: any = {
                        method: "POST",
-                       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+                       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                        body: JSON.stringify({ model: preferredEmbeddingModel, input: finalResult.text.substring(0, 3000) })
-                   } as any);
+                   };
+                   const res = await fetch("https://api.openai.com/v1/embeddings", options);
                    const data = await res.json();
                    vector = data.data?.[0]?.embedding || [];
               } else {
