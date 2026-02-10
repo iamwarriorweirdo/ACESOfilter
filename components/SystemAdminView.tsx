@@ -1,4 +1,5 @@
 
+
 import { SystemConfig, Language, Document } from '../types';
 import { TRANSLATIONS } from '../constants';
 import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight, Workflow } from 'lucide-react';
@@ -290,7 +291,8 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
 
 const StatusCard = ({ icon, label, value, sub, borderColor }: any) => <div className={`bg-card border ${borderColor} p-6 rounded-2xl shadow-sm`}><div className="flex items-center justify-between mb-2"><span className="text-xs text-muted-foreground font-bold uppercase">{label}</span>{icon}</div><div className="text-2xl font-black">{value}</div><div className="text-[10px] text-muted-foreground opacity-60 uppercase font-bold">{sub}</div></div>;
 
-const ConfigField = ({ label, sub, children }: { label: string, sub: string, children: React.ReactNode }) => (
+// DO fix: make children optional in ConfigField props type to avoid "Property children is missing" error when React inference is strict
+const ConfigField = ({ label, sub, children }: { label: string, sub: string, children?: React.ReactNode }) => (
     <div className="space-y-2">
         <label className="block text-sm font-black text-foreground uppercase tracking-tight">{label}</label>
         <p className="text-[10px] text-muted-foreground leading-tight">{sub}</p>

@@ -1,7 +1,7 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Message, Role, ChatSession, Language, Document } from '../types';
-import { Send, Bot, User, Cpu, FileText, ExternalLink, Plus, MessageSquare, Trash2, Menu, X, Download, File, ArrowUpRight, Eye } from 'lucide-react';
+import { Send, Bot, User, Cpu, FileText, Plus, MessageSquare, Trash2, Menu, X, Download, Eye, AlertTriangle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { TRANSLATIONS } from '../constants';
 
@@ -37,33 +37,21 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     const doc = documents.find(d => d.name === filename);
     if (!doc) return;
     try {
-      if (doc.content.startsWith('data:')) {
-        const link = window.document.createElement('a');
-        link.href = doc.content;
-        link.download = doc.name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } else {
-        const a = document.createElement('a');
-        a.href = doc.content;
-        a.target = '_blank';
-        a.download = doc.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-    } catch (e) { console.error(e); }
+      const link = document.createElement('a');
+      link.href = doc.content;
+      link.download = doc.name;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (e) { }
   };
 
   const findDocByRef = (ref: string): Document | undefined => {
     const trimmed = ref.trim();
-    const exact = documents.find(d => d.name === trimmed);
-    if (exact) return exact;
-    return documents.find(d => d.name.startsWith(trimmed) || trimmed.endsWith(d.name) || d.name.includes(trimmed));
+    return documents.find(d => d.name.toLowerCase() === trimmed.toLowerCase() || d.name.includes(trimmed) || trimmed.includes(d.name));
   };
 
-  // Remove the citation tags from text for cleaner reading, we render card at bottom instead
   const cleanContent = (raw: string) => raw.replace(/\[\[File:\s*([^\]]*?)\]\]/g, '').trim();
 
   const renderContent = (content: string) => {
@@ -79,43 +67,41 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
         {uniqueFileRefs.length > 0 && (
           <div className="flex flex-col gap-3 mt-4 pt-4 border-t border-white/10">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground opacity-70">Tài liệu đính kèm</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-primary opacity-90 flex items-center gap-2">
+                <FileText size={12}/> TÀI LIỆU CẦN KIỂM TRA
+            </p>
             {uniqueFileRefs.map((ref, idx) => {
               const doc = findDocByRef(ref);
-              // Fallback UI if doc not found in state but cited
               const docName = doc ? doc.name : ref;
-              const sizeMB = doc ? (doc.size / (1024 * 1024)).toFixed(2) : '?';
+              const isFound = !!doc;
               
               return (
-                <div key={idx} className="flex items-center gap-4 p-4 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all group shadow-lg max-w-xl">
-                  <div className="w-12 h-12 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center shrink-0 border border-blue-500/20">
-                    <FileText size={24} />
+                <div key={idx} className={`flex items-center gap-4 p-4 rounded-2xl border transition-all shadow-lg max-w-xl ${isFound ? 'bg-primary/5 border-primary/20 hover:bg-primary/10' : 'bg-red-500/5 border-red-500/20'}`}>
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${isFound ? 'bg-primary/10 text-primary border-primary/20' : 'bg-red-500/10 text-red-500 border-red-500/20'}`}>
+                    {isFound ? <FileText size={20} /> : <AlertTriangle size={20} />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-bold text-sm truncate text-foreground mb-1" title={docName}>{docName}</div>
-                    <div className="text-[10px] font-medium text-muted-foreground flex gap-2">
-                      <span className="bg-white/5 px-1.5 py-0.5 rounded">{doc ? doc.type.split('/').pop()?.toUpperCase() : 'DOC'}</span>
-                      <span className="px-1.5 py-0.5">{sizeMB} MB</span>
+                    <div className="font-bold text-xs truncate text-foreground" title={docName}>{docName}</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {isFound ? `${(doc.size / 1024 / 1024).toFixed(2)} MB` : 'File không tìm thấy'}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {doc && onViewDocument && (
+                  {isFound && (
+                      <div className="flex items-center gap-2">
                         <button
-                        onClick={() => onViewDocument(doc.name)}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 transition-all font-bold text-xs shadow-lg shadow-primary/20"
-                        title="Xem tài liệu ngay"
+                          onClick={() => onViewDocument?.(docName)}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-all font-bold text-[10px] uppercase"
                         >
-                        <Eye size={14} /> Xem
+                          <Eye size={12} /> Xem
                         </button>
-                    )}
-                    <button
-                      onClick={() => handleDownloadFile(docName)}
-                      className="p-2.5 rounded-xl text-muted-foreground hover:bg-white/10 hover:text-foreground transition-all border border-transparent hover:border-white/10"
-                      title="Tải xuống"
-                    >
-                      <Download size={16} />
-                    </button>
-                  </div>
+                        <button
+                          onClick={() => handleDownloadFile(docName)}
+                          className="p-2 rounded-lg text-muted-foreground hover:bg-white/10 hover:text-foreground transition-all border border-white/10"
+                        >
+                          <Download size={14} />
+                        </button>
+                      </div>
+                  )}
                 </div>
               );
             })}
@@ -127,39 +113,20 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   return (
     <div className="flex h-full w-full bg-transparent overflow-hidden relative">
-      <div className={`
-          absolute md:relative z-20 h-full w-80 bg-card/40 backdrop-blur-3xl border-r border-white/5 flex flex-col transition-transform duration-500 cubic-bezier(0.4, 0, 0.2, 1)
-          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-      `}>
+      <div className={`absolute md:relative z-20 h-full w-80 bg-card/40 backdrop-blur-3xl border-r border-white/5 flex flex-col transition-transform duration-500 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="p-6 border-b border-white/5">
-          <button
-            onClick={() => { onNewChat(); setIsSidebarOpen(false); }}
-            className="w-full flex items-center justify-center gap-3 bg-primary text-white hover:bg-primary/90 px-6 py-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest shadow-lg shadow-primary/20 hover:scale-105 active:scale-95"
-          >
+          <button onClick={() => { onNewChat(); setIsSidebarOpen(false); }} className="w-full flex items-center justify-center gap-3 bg-primary text-white hover:bg-primary/90 px-6 py-4 rounded-2xl transition-all font-black text-[10px] uppercase tracking-widest shadow-lg shadow-primary/20">
             <Plus size={18} /> <span>{t.newChat}</span>
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
-          <div className="px-4 py-2 text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] opacity-40">Cognitive History</div>
           {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`group flex items-center justify-between p-4 rounded-2xl cursor-pointer transition-all border ${currentSessionId === session.id
-                ? 'bg-primary/10 border-primary/20 text-foreground'
-                : 'border-transparent text-muted-foreground hover:bg-white/5 hover:text-foreground'
-                }`}
-              onClick={() => { onSelectSession(session); setIsSidebarOpen(false); }}
-            >
+            <div key={session.id} className={`group flex items-center justify-between p-4 rounded-2xl cursor-pointer transition-all border ${currentSessionId === session.id ? 'bg-primary/10 border-primary/20 text-foreground' : 'border-transparent text-muted-foreground hover:bg-white/5'}`} onClick={() => { onSelectSession(session); setIsSidebarOpen(false); }}>
               <div className="flex items-center gap-4 truncate flex-1">
                 <MessageSquare size={16} className={currentSessionId === session.id ? "text-primary" : "opacity-30"} />
-                <span className="truncate font-black text-[11px] uppercase tracking-tight">{session.title || "Observation Matrix"}</span>
+                <span className="truncate font-black text-[11px] uppercase">{session.title || "Observation Matrix"}</span>
               </div>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDeleteSession(session.id); }}
-                className="p-2 rounded-xl opacity-0 group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-500 transition-all"
-              >
-                <Trash2 size={14} />
-              </button>
+              <button onClick={(e) => { e.stopPropagation(); onDeleteSession(session.id); }} className="p-2 rounded-xl opacity-0 group-hover:opacity-100 hover:text-red-500 transition-all"><Trash2 size={14} /></button>
             </div>
           ))}
         </div>
@@ -176,81 +143,43 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <div className="absolute inset-0 bg-gradient-to-b from-primary/5 via-transparent to-transparent pointer-events-none" />
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-8 animate-fade-in relative z-10">
-              <div className="w-28 h-28 bg-gradient-to-tr from-primary/20 to-indigo-500/20 rounded-[2.5rem] flex items-center justify-center mb-10 ring-1 ring-white/10 shadow-[0_30px_60px_rgba(99,102,241,0.2)] animate-float">
-                <Cpu className="w-14 h-14 text-primary" />
+              <div className="w-24 h-24 bg-primary/20 rounded-[2rem] flex items-center justify-center mb-8 ring-1 ring-white/10 animate-float">
+                <Cpu className="w-12 h-12 text-primary" />
               </div>
-              <h3 className="text-4xl font-black mb-4 tracking-tighter uppercase">{hasContext ? "Matrix Knowledge Link" : "System Offline"}</h3>
-              <p className="max-w-md text-muted-foreground font-black text-xs uppercase tracking-widest opacity-60 leading-relax mb-10">
-                {hasContext ? t.userDesc : "Synchronize archives to begin cognitive extraction."}
+              <h3 className="text-3xl font-black mb-4 tracking-tighter uppercase">{hasContext ? "Hệ thống Tra cứu Tài liệu" : "Chưa có tài liệu"}</h3>
+              <p className="max-w-md text-muted-foreground font-black text-[10px] uppercase tracking-widest opacity-60 leading-relax">
+                {hasContext ? "Sử dụng AI để tra cứu thông tin chính xác từ các tệp đã tải lên." : "Vui lòng tải tệp lên để bắt đầu tra cứu."}
               </p>
-
-              {hasContext && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-lg w-full">
-                  <button onClick={() => onInputChange("Nội quy công ty")} className="glass-panel hover:bg-primary/10 border-white/5 p-6 rounded-2xl text-[10px] font-black uppercase tracking-widest text-left transition-all hover:scale-105 active:scale-95 flex items-center gap-3">
-                    <span className="text-2xl">📜</span> Nội quy công ty
-                  </button>
-                  <button onClick={() => onInputChange("Mẫu đơn xin nghỉ phép")} className="glass-panel hover:bg-indigo-500/10 border-white/5 p-6 rounded-2xl text-[10px] font-black uppercase tracking-widest text-left transition-all hover:scale-105 active:scale-95 flex items-center gap-3">
-                    <span className="text-2xl">📝</span> Đơn xin nghỉ
-                  </button>
-                </div>
-              )}
             </div>
           ) : (
             messages.map((msg) => (
               <div key={msg.id} className={`flex w-full animate-slide-up ${msg.role === Role.USER ? 'justify-end' : 'justify-start'} relative z-10`}>
                 <div className={`flex max-w-[95%] lg:max-w-[85%] gap-6 ${msg.role === Role.USER ? 'flex-row-reverse' : 'flex-row'}`}>
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-2xl shrink-0 ${msg.role === Role.USER ? 'bg-primary text-white' : 'bg-card border border-white/10 text-primary'
-                    }`}>
-                    {msg.role === Role.USER ? <User size={24} /> : <Bot size={24} className="animate-float" />}
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-xl ${msg.role === Role.USER ? 'bg-primary text-white' : 'bg-card border border-white/10 text-primary'}`}>
+                    {msg.role === Role.USER ? <User size={20} /> : <Bot size={20} />}
                   </div>
-                  <div className={`p-8 rounded-[2rem] shadow-2xl border ${msg.role === Role.USER
-                    ? 'bg-primary/90 text-white border-primary rounded-tr-none'
-                    : 'glass-panel border-white/10 rounded-tl-none'
-                    }`}>
-                    <div className="text-sm font-medium leading-relaxed tracking-wide">
-                      {renderContent(msg.content)}
-                    </div>
+                  <div className={`p-6 rounded-[1.5rem] shadow-xl border ${msg.role === Role.USER ? 'bg-primary/90 text-white border-primary rounded-tr-none' : 'glass-panel border-white/10 rounded-tl-none'}`}>
+                    <div className="text-sm leading-relaxed">{renderContent(msg.content)}</div>
                   </div>
                 </div>
               </div>
             ))
           )}
-
           {isLoading && (
             <div className="flex justify-start w-full relative z-10">
               <div className="flex max-w-[80%] gap-6">
-                <div className="w-12 h-12 rounded-2xl bg-card border border-white/10 flex items-center justify-center text-primary shadow-2xl">
-                  <Bot size={24} className="animate-float" />
-                </div>
-                <div className="glass-panel border-white/10 p-6 rounded-[2rem] rounded-tl-none shadow-2xl flex items-center gap-3 h-16">
-                  <span className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
+                <div className="w-10 h-10 rounded-xl bg-card border border-white/10 flex items-center justify-center text-primary shadow-xl"><Bot size={20} /></div>
+                <div className="glass-panel border-white/10 p-4 rounded-2xl rounded-tl-none flex items-center gap-2"><span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce" /><span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce delay-75" /><span className="w-1.5 h-1.5 bg-primary rounded-full animate-bounce delay-150" /></div>
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} className="h-20" />
+          <div ref={messagesEndRef} className="h-10" />
         </div>
 
-        <div className="p-6 md:p-12 bg-transparent relative z-20">
+        <div className="p-6 md:p-10 bg-transparent relative z-20">
           <form onSubmit={onSubmit} className="max-w-4xl mx-auto relative group">
-            <div className="absolute inset-0 bg-primary/20 blur-3xl opacity-0 group-focus-within:opacity-100 transition-opacity" />
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => onInputChange(e.target.value)}
-              placeholder={hasContext ? "Request Archive Deep Scan..." : "System Initialization..."}
-              disabled={isLoading}
-              className="w-full glass-panel border-white/10 rounded-[2.5rem] px-10 py-6 pr-20 text-base font-black tracking-tight focus:outline-none focus:ring-8 focus:ring-primary/5 transition-all shadow-2xl relative z-10 placeholder:text-muted-foreground/30 placeholder:uppercase placeholder:text-[10px] placeholder:tracking-[0.3em]"
-            />
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              className="absolute right-4 top-1/2 -translate-y-1/2 w-14 h-14 bg-primary text-white rounded-[1.5rem] hover:scale-110 active:scale-95 disabled:opacity-30 disabled:scale-100 disabled:cursor-not-allowed transition-all shadow-xl shadow-primary/30 z-20 flex items-center justify-center"
-            >
-              <Send size={24} />
-            </button>
+            <input type="text" value={input} onChange={(e) => onInputChange(e.target.value)} placeholder={hasContext ? "Hỏi bất cứ điều gì về tài liệu..." : "Hệ thống đang chờ tải tệp..."} disabled={isLoading} className="w-full glass-panel border-white/10 rounded-[2rem] px-8 py-5 pr-16 text-sm font-bold focus:outline-none ring-4 ring-transparent focus:ring-primary/10 transition-all shadow-2xl relative z-10" />
+            <button type="submit" disabled={!input.trim() || isLoading} className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 bg-primary text-white rounded-2xl hover:scale-105 active:scale-95 disabled:opacity-30 transition-all shadow-xl z-20 flex items-center justify-center"><Send size={20} /></button>
           </form>
         </div>
       </div>

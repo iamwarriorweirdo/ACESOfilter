@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect } from 'react';
 import { Document, Folder, Message, ChatSession, UserRole, Language, SystemConfig, Role, Theme } from './types';
 import AdminView from './components/AdminView';
@@ -246,7 +247,8 @@ const App: React.FC = () => {
         if (!e.target.files) return;
         setIsUploading(true);
         setShowUploadResultModal(false);
-        const files = Array.from(e.target.files);
+        // DO fix: cast Array.from to File[] to avoid "unknown" type error in map
+        const files = Array.from(e.target.files) as File[];
         const results: { fileName: string; success: boolean; error?: string }[] = new Array(files.length);
 
         const processOne = async (file: File, index: number) => {
@@ -260,7 +262,8 @@ const App: React.FC = () => {
                 ) {
                     try {
                         // Dynamic import to avoid bundle bloat if unused
-                        const { compressDocx } = await import('./utils/docxCompression');
+                        // DO fix: cast dynamic import to any to ensure types are handled correctly
+                        const { compressDocx } = (await import('./utils/docxCompression')) as any;
                         console.log(`AUTO-COMPRESSING: ${file.name}`);
                         fileToUpload = await compressDocx(file);
 
@@ -309,6 +312,7 @@ const App: React.FC = () => {
             }
         };
 
+        // DO fix: use typed files array
         await Promise.all(files.map((file, i) => processOne(file, i)));
         setUploadResults([...results]);
         setShowUploadResultModal(true);

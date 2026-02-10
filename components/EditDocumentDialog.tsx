@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Document, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
@@ -40,7 +41,8 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     };
 
     useEffect(() => {
-        let interval: NodeJS.Timeout;
+        // DO fix: use any for interval to avoid "Cannot find namespace NodeJS" in browser environment
+        let interval: any;
         let pollCount = 0;
         const MAX_POLLS = 60; // 5 minutes (5s interval)
 

@@ -1,4 +1,5 @@
 
+
 import { Pinecone } from '@pinecone-database/pinecone';
 import { neon } from '@neondatabase/serverless';
 import 'dotenv/config';
@@ -46,9 +47,9 @@ async function cleanupGhostData() {
         // 6. Cleanup
         console.log("Cleaning up orphans...");
         for (const id of orphans) {
-            process.stdout.write(`Deleting ${id}... `);
+            // DO fix: use console.log instead of process.stdout.write to avoid environment compatibility issues
             await index.deleteMany([id]);
-            console.log("Done.");
+            console.log(`Deleted orphan vector: ${id}`);
         }
 
         console.log(`\n✅ Cleanup complete. Deleted ${orphans.length} orphan vectors.`);

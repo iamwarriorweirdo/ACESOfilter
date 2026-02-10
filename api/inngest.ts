@@ -53,13 +53,12 @@ async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mi
             ],
             max_tokens: 2000
         })
-    });
+    } as any);
     const data = await res.json();
     if (data.error) throw new Error(data.error.message);
     return data.choices[0]?.message?.content || "";
 }
 
-// New: Call Groq Vision
 async function callGroqVision(bufferBase64: string, model: string = 'llama-3.2-11b-vision-preview') {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) throw new Error("Missing GROQ_API_KEY");
@@ -84,37 +83,30 @@ async function callHFInference(buffer: Buffer, modelId: string) {
     const hfKey = process.env.HUGGING_FACE_API_KEY;
     if (!hfKey) throw new Error("Missing HUGGING_FACE_API_KEY");
     
-    // Determine payload type based on model
     const isPhi3 = modelId.toLowerCase().includes('phi-3') || modelId.toLowerCase().includes('vision');
     
     let reqBody: any;
     let contentType = "application/octet-stream";
 
     if (isPhi3) {
-        // Phi-3-vision and other Instruct VLMs typically require a JSON payload with instructions
         const base64Image = buffer.toString('base64');
-        const dataUri = `data:image/jpeg;base64,${base64Image}`;
-        
-        // Standard payload for HF Inference API for VLM (User/Assistant structure)
         reqBody = JSON.stringify({
             inputs: {
-                image: base64Image, // Some endpoints take base64 directly
+                image: base64Image,
                 prompt: `<|user|>\n<|image_1|>\nOCR Task: Extract ALL text from this image verbatim. Do not summarize. Just return the text content.\n<|end|>\n<|assistant|>\n`
             },
             parameters: { max_new_tokens: 2000 }
         });
         contentType = "application/json";
     } else {
-        // Florence-2 and generic image-to-text often accept raw bytes
         reqBody = buffer;
     }
 
     const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
         headers: { Authorization: `Bearer ${hfKey}`, "Content-Type": contentType },
         method: "POST",
-        // Cast to any to avoid TS2769 error in Node environment where Buffer is acceptable but types are strict
         body: reqBody as any,
-    });
+    } as any);
     
     const result = await response.json();
     
@@ -148,7 +140,6 @@ const processFileInBackground = inngest.createFunction(
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
     try {
-      // 1. Fetch Config to check for Preferred OCR Model
       const configStep = await step.run("get-config", async () => {
          const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
          if (!dbUrl) return {};
@@ -184,7 +175,6 @@ const processFileInBackground = inngest.createFunction(
             method = "docx-jszip";
           }
         } else if (lowName.endsWith('.pdf')) {
-          // @ts-ignore
           const pdfParse = await import('pdf-parse');
           const pdfExtractor = pdfParse.default || pdfParse;
           const data = await pdfExtractor(buffer);
@@ -198,12 +188,8 @@ const processFileInBackground = inngest.createFunction(
         let text = parseResult.text;
         let method = parseResult.method;
 
-        // Condition to trigger AI OCR
         const isAIRequired = !text || text.trim().length < 20 || 
-                             preferredOcrModel.includes('huggingface') || 
-                             preferredOcrModel.includes('florence') ||
-                             preferredOcrModel.includes('phi-3') ||
-                             preferredOcrModel.includes('vision') ||
+                             preferredOcrModel.includes('vision') || 
                              preferredOcrModel.includes('gpt');
 
         if (isAIRequired) {
@@ -216,15 +202,8 @@ const processFileInBackground = inngest.createFunction(
                  await updateDbStatus(docId, `Sử dụng Groq Vision (${preferredOcrModel})...`);
                  text = await callGroqVision(parseResult.bufferBase64, preferredOcrModel);
                  method = "groq-vision";
-             } else if (preferredOcrModel.includes('huggingface') || preferredOcrModel.includes('florence') || preferredOcrModel.includes('phi-3')) {
-                 const modelId = preferredOcrModel.includes('/') ? preferredOcrModel : "microsoft/Florence-2-base";
-                 await updateDbStatus(docId, `Chuyển sang HF Inference: ${modelId}...`);
-                 const buf = Buffer.isBuffer(parseResult.buffer) ? parseResult.buffer : Buffer.from(parseResult.buffer as any);
-                 text = await callHFInference(buf, modelId);
-                 method = "hf-model";
              } else {
                 await updateDbStatus(docId, "Sử dụng Gemini Vision OCR...");
-                // Default Gemini
                 const res = await ai.models.generateContent({
                   model: 'gemini-3-flash-preview',
                   contents: [{ role: 'user', parts: [
@@ -236,11 +215,10 @@ const processFileInBackground = inngest.createFunction(
                 method = "gemini-ocr-vision";
              }
           } catch (e: any) {
-            await updateDbStatus(docId, `OCR Error (${method}): ${e.message}. Retrying with Fallback...`);
+            await updateDbStatus(docId, `OCR Error: ${e.message}. Fallback...`);
              try {
-                 // Fallback to Gemini if main choice failed
                 const res = await ai.models.generateContent({
-                  model: 'gemini-2.0-flash-exp', // Use fallback model
+                  model: 'gemini-2.0-flash-exp',
                   contents: [{ role: 'user', parts: [
                     { inlineData: { data: parseResult.bufferBase64, mimeType: 'application/octet-stream' } },
                     { text: "Recover text content from this file." }
@@ -248,9 +226,7 @@ const processFileInBackground = inngest.createFunction(
                 });
                 text = res.text || text;
                 if (res.text) method = "gemini-fallback";
-             } catch (geminiErr) {
-                 if (!text) throw new Error("All OCR methods failed.");
-             }
+             } catch (geminiErr) { }
           }
         }
         return { text, method };
@@ -270,11 +246,10 @@ const processFileInBackground = inngest.createFunction(
                         messages: [{ role: "user", content: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }],
                         response_format: { type: "json_object" }
                     })
-                });
+                } as any);
                 const data = await res.json();
                 meta = JSON.parse(data.choices[0]?.message?.content || "{}");
-             } else if (analysisModel.includes('llama') || analysisModel.includes('mixtral')) {
-                // Groq
+             } else if (analysisModel.includes('llama')) {
                 const groqRes = await groq.chat.completions.create({
                     messages: [{ role: "user", content: `JSON metadata cho văn bản: ${finalResult.text.substring(0, 3000)}` }],
                     model: analysisModel,
@@ -282,7 +257,6 @@ const processFileInBackground = inngest.createFunction(
                 });
                 meta = JSON.parse(groqRes.choices[0]?.message?.content || "{}");
              } else {
-                 // Default Gemini
                  const res = await ai.models.generateContent({
                     model: analysisModel,
                     contents: [{ role: 'user', parts: [{ text: `Trả về JSON {title, summary, key_information, language} cho: ${finalResult.text.substring(0, 3000)}` }] }],
@@ -290,17 +264,7 @@ const processFileInBackground = inngest.createFunction(
                  });
                  meta = JSON.parse(res.text || "{}");
              }
-          } catch (e) {
-             // Generic Fallback
-             try {
-                const groqRes = await groq.chat.completions.create({
-                    messages: [{ role: "user", content: `JSON metadata cho văn bản: ${finalResult.text.substring(0, 3000)}` }],
-                    model: "llama-3.1-70b-versatile",
-                    response_format: { type: "json_object" }
-                });
-                meta = JSON.parse(groqRes.choices[0]?.message?.content || "{}");
-             } catch (ge) {}
-          }
+          } catch (e) { }
 
           const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
           const { neon } = await import('@neondatabase/serverless');
@@ -308,20 +272,17 @@ const processFileInBackground = inngest.createFunction(
           
           await sql`UPDATE documents SET extracted_content = ${JSON.stringify({ ...meta, full_text_content: finalResult.text, parse_method: finalResult.method })}, status = 'completed' WHERE id = ${docId}`;
 
-          // Vector Indexing
           try {
               let vector: number[] = [];
-              
               if (preferredEmbeddingModel.includes('text-embedding-3') && process.env.OPENAI_API_KEY) {
                    const res = await fetch("https://api.openai.com/v1/embeddings", {
                        method: "POST",
                        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
                        body: JSON.stringify({ model: preferredEmbeddingModel, input: finalResult.text.substring(0, 3000) })
-                   });
+                   } as any);
                    const data = await res.json();
                    vector = data.data?.[0]?.embedding || [];
               } else {
-                  // Default Gemini
                   const emb = await ai.models.embedContent({
                       model: "text-embedding-004",
                       contents: [{ parts: [{ text: finalResult.text.substring(0, 3000) }] }]
@@ -333,9 +294,7 @@ const processFileInBackground = inngest.createFunction(
                   const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
                   await pc.index(process.env.PINECONE_INDEX_NAME!).upsert([{ id: docId, values: vector, metadata: { filename: fileName, text: finalResult.text.substring(0, 4000) } }] as any);
               }
-          } catch (e) {
-              await updateDbStatus(docId, "Hoàn tất (Vector Search dự phòng chưa kích hoạt).");
-          }
+          } catch (e) { }
       });
     } catch (e: any) {
       await updateDbStatus(docId, e.message, true);
