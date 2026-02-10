@@ -153,6 +153,17 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
         const docId = body.id;
         if (!docId) return res.status(400).json({ error: 'Missing document ID' });
+
+        // CLEANUP: Fetch URL before deleting to remove from Cloudinary/Supabase/Pinecone
+        const rows = await sql`SELECT id, url, content FROM documents WHERE id = ${docId}`;
+        if (rows.length > 0) {
+            const target = rows[0];
+            await inngest.send({ 
+                name: "app/delete.file", 
+                data: { docId: target.id, url: target.url || target.content } 
+            });
+        }
+
         await sql`DELETE FROM documents WHERE id = ${docId}`;
         return res.status(200).json({ success: true });
     }
