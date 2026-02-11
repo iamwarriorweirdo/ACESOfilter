@@ -66,6 +66,10 @@ export interface SystemConfig {
   embeddingModel?: string; // Dedicated for Vector Search
   hfModel?: string;       // Hugging Face Model ID
   maxFileSizeMB: number;
+  
+  // Dedicated API Keys to split load
+  ocrApiKey?: string;     // NEW: Key specific for heavy OCR/Ingestion tasks
+
   // Adobe PDF Services Integration
   enableAdobeCompression?: boolean;
   adobeClientId?: string;

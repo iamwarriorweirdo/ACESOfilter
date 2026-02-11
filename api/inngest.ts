@@ -1,3 +1,4 @@
+
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -155,6 +156,13 @@ const processFileInBackground = inngest.createFunction(
       const preferredOcrModel = configStep.ocrModel || 'gemini-3-flash-preview';
       const preferredEmbeddingModel = configStep.embeddingModel || 'text-embedding-004';
 
+      // DETERMINE API KEY for Ingestion Workload (OCR + Embedding)
+      // Prioritize: process.env.OCR_API_KEY -> config.ocrApiKey -> process.env.API_KEY
+      const ingestionApiKey = process.env.OCR_API_KEY || configStep.ocrApiKey || process.env.API_KEY || "";
+      
+      // Use this specific instance for heavy lifting
+      const ingestionAi = new GoogleGenAI({ apiKey: ingestionApiKey });
+
       const extractionResults = await step.run("extract-analyze-store", async () => {
         await updateDbStatus(docId, `Bắt đầu xử lý file: ${fileName}`);
         
@@ -211,12 +219,12 @@ const processFileInBackground = inngest.createFunction(
                  text = await callGroqVision(bufferBase64, preferredOcrModel);
                  method = "groq-vision";
              } else {
-                const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
                 const mimeType = getMimeType(fileName);
                 
                 if (mimeType !== 'application/octet-stream') {
-                    const res = await ai.models.generateContent({
-                      model: 'gemini-3-flash-preview',
+                    // Using dedicated ingestion Key
+                    const res = await ingestionAi.models.generateContent({
+                      model: 'gemini-3-flash-preview', // OCR always uses powerful model
                       contents: {
                           parts: [
                             { inlineData: { data: bufferBase64, mimeType: mimeType } },
@@ -225,7 +233,7 @@ const processFileInBackground = inngest.createFunction(
                       }
                     });
                     text = res.text || "";
-                    method = "gemini-ocr-vision";
+                    method = "gemini-ocr-vision-dedicated";
                 }
              }
         }
@@ -252,8 +260,8 @@ const processFileInBackground = inngest.createFunction(
                   const data = await res.json();
                   meta = JSON.parse(data.choices[0]?.message?.content || "{}");
              } else {
-                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
-                 const res = await ai.models.generateContent({
+                 // Analysis also uses ingestion key
+                 const res = await ingestionAi.models.generateContent({
                     model: 'gemini-3-flash-preview',
                     contents: { parts: [{ text: `Phân tích văn bản và trả về JSON {title, summary, key_information, language}: ${text.substring(0, 4000)}` }] },
                     config: { responseMimeType: 'application/json' }
@@ -294,8 +302,8 @@ const processFileInBackground = inngest.createFunction(
                const data = await res.json();
                vector = data.data?.[0]?.embedding || [];
           } else {
-              const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
-              vector = await getEmbeddingWithFallback(ai, textToEmbed.substring(0, 3000), preferredEmbeddingModel);
+              // Vector generation uses ingestion key (Critical for avoiding Chat API limits)
+              vector = await getEmbeddingWithFallback(ingestionAi, textToEmbed.substring(0, 3000), preferredEmbeddingModel);
           }
 
           if (vector.length > 0 && process.env.PINECONE_API_KEY) {

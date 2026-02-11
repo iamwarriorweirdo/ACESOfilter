@@ -1,7 +1,7 @@
 
 import { SystemConfig, Language, Document } from '../types';
 import { TRANSLATIONS } from '../constants';
-import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight, Workflow } from 'lucide-react';
+import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight, Workflow, ScanEye } from 'lucide-react';
 import React, { useState, useEffect } from 'react';
 
 interface SystemAdminViewProps {
@@ -203,15 +203,19 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                     Lưu ý: Các API Key dưới đây sẽ được lưu vào biến môi trường hệ thống. Nếu bạn đã thiết lập trong Vercel Environment Variables, không cần điền vào đây.
                                 </p>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                                    <ConfigField label="Adobe Client ID" sub="Dùng để nén PDF (Tùy chọn)">
-                                        <input 
-                                            type="password"
-                                            value={localConfig.adobeClientId || ''}
-                                            onChange={e => handleLocalChange('adobeClientId', e.target.value)}
-                                            className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-mono outline-none"
-                                            placeholder={process.env.ADOBE_CLIENT_ID ? "•••• (Set in Env)" : "Enter Client ID"}
-                                        />
+                                    <ConfigField label="OCR / Vision API Key" sub="Dành riêng cho xử lý file (Tránh Rate Limit)">
+                                        <div className="relative">
+                                            <ScanEye className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+                                            <input 
+                                                type="password"
+                                                value={localConfig.ocrApiKey || ''}
+                                                onChange={e => handleLocalChange('ocrApiKey', e.target.value)}
+                                                className="w-full bg-muted/50 border border-border rounded-xl pl-10 pr-4 py-3 text-sm font-mono outline-none focus:ring-2 focus:ring-primary/20"
+                                                placeholder={process.env.OCR_API_KEY ? "•••• (Set in Env)" : "AIzaSy..."}
+                                            />
+                                        </div>
                                     </ConfigField>
+
                                     <ConfigField label="OpenAI API Key" sub="Dùng cho GPT-4o Mini / Embeddings">
                                         <input 
                                             type="password"
@@ -220,7 +224,6 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             placeholder={process.env.OPEN_AI_API_KEY ? "•••••••• (Active)" : "sk-..."}
                                             disabled={true} 
                                         />
-                                        <div className="text-[10px] text-blue-500 mt-1">* Vui lòng set OPEN_AI_API_KEY trong Vercel Dashboard để bảo mật.</div>
                                     </ConfigField>
                                 </div>
                                 <div className="flex items-center gap-3">
