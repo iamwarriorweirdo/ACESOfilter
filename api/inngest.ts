@@ -58,12 +58,14 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
     const { neon } = await import('@neondatabase/serverless');
     const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
     const timestamp = new Date().toLocaleTimeString('vi-VN');
-    const logLine = `[${timestamp}] ${isError ? '❌ ERROR' : 'ℹ️ INFO'}: ${message}`;
+    // Truncate message to avoid DB errors
+    const safeMessage = message.substring(0, 250);
+    const logLine = `[${timestamp}] ${isError ? '❌ ERROR' : 'ℹ️ INFO'}: ${safeMessage}`;
     
     if (isError) {
         await sql`UPDATE documents SET extracted_content = ${logLine}, status = 'failed' WHERE id = ${docId}`;
     } else {
-        await sql`UPDATE documents SET status = ${message.substring(0, 50)} WHERE id = ${docId}`;
+        await sql`UPDATE documents SET status = ${safeMessage.substring(0, 50)} WHERE id = ${docId}`;
     }
   } catch (e) { }
 }
@@ -86,7 +88,7 @@ async function callOpenAIVision(bufferBase64: string, model: string = 'gpt-4o-mi
                     ]
                 }
             ],
-            max_tokens: 2000
+            max_tokens: 4000
         })
     };
 
@@ -116,15 +118,11 @@ async function callGroqVision(bufferBase64: string, model: string = 'llama-3.2-1
     return chatCompletion.choices[0]?.message?.content || "";
 }
 
-/**
- * Deep Extraction cho Docx: Quét XML để lấy text trong Text Box, Table, Header, Footer
- */
 async function extractDocxDeepText(buffer: Buffer): Promise<string> {
   try {
     const zip = await JSZip.loadAsync(buffer);
     const files = Object.keys(zip.files).filter(f => f.endsWith('.xml'));
     let fullText = "";
-    
     for (const f of files) {
         const content = await zip.file(f)?.async("string");
         if (!content) continue;
@@ -138,12 +136,17 @@ async function extractDocxDeepText(buffer: Buffer): Promise<string> {
 }
 
 const processFileInBackground = inngest.createFunction(
-  { id: "process-file-background", retries: 0 },
+  { 
+    id: "process-file-background", 
+    retries: 1, // Allow 1 retry on failure
+    concurrency: { limit: 5 } // Limit concurrent heavy processings
+  },
   { event: "app/process.file" },
   async ({ event, step }) => {
     const { url, fileName, docId } = event.data;
 
     try {
+      // --- STEP 1: PREPARE CONFIG ---
       const configStep = await step.run("get-config", async () => {
          const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
          if (!dbUrl) return {};
@@ -154,17 +157,12 @@ const processFileInBackground = inngest.createFunction(
       });
       
       const preferredOcrModel = configStep.ocrModel || 'gemini-3-flash-preview';
-      const preferredEmbeddingModel = configStep.embeddingModel || 'text-embedding-004';
-
-      // DETERMINE API KEY for Ingestion Workload (OCR + Embedding)
-      // Prioritize: process.env.OCR_API_KEY -> config.ocrApiKey -> process.env.API_KEY
       const ingestionApiKey = process.env.OCR_API_KEY || configStep.ocrApiKey || process.env.API_KEY || "";
-      
-      // Use this specific instance for heavy lifting
-      const ingestionAi = new GoogleGenAI({ apiKey: ingestionApiKey });
 
-      const extractionResults = await step.run("extract-analyze-store", async () => {
-        await updateDbStatus(docId, `Bắt đầu xử lý file: ${fileName}`);
+      // --- STEP 2: HEAVY LIFTING - DOWNLOAD & OCR ---
+      // We group Download + OCR because we can't pass huge Buffers between steps easily.
+      const ocrResult = await step.run("perform-ocr-extraction", async () => {
+        await updateDbStatus(docId, `Downloading & OCR: ${fileName}`);
         
         const ab = await fetchFileBuffer(url);
         const buffer = Buffer.from(ab);
@@ -173,19 +171,19 @@ const processFileInBackground = inngest.createFunction(
         let text = "";
         let method = "unknown";
 
+        // Strategy A: Native Parsing (Fast & Cheap)
         if (lowName.endsWith('.txt')) {
           text = buffer.toString('utf-8');
           method = "text-plain";
         } else if (lowName.endsWith('.docx')) {
           try {
-            // @ts-ignore - Fix TS7016 by ignoring lack of types in serverless environment
+            // @ts-ignore 
             const mammoth = await import('mammoth');
             const extractor = mammoth.default || (mammoth as any);
             const res = await extractor.extractRawText({ buffer });
             text = res.value;
             method = "docx-mammoth";
-            
-            if (!text || text.trim().length < 10) {
+            if (!text || text.trim().length < 50) {
                 text = await extractDocxDeepText(buffer);
                 method = "docx-deep-xml";
             }
@@ -195,7 +193,7 @@ const processFileInBackground = inngest.createFunction(
           }
         } else if (lowName.endsWith('.pdf')) {
           try {
-            // @ts-ignore - Fix TS7016
+            // @ts-ignore 
             const pdfParseModule = await import('pdf-parse');
             const pdfExtractor = pdfParseModule.default || (pdfParseModule as any);
             const data = await pdfExtractor(buffer);
@@ -206,89 +204,117 @@ const processFileInBackground = inngest.createFunction(
           }
         }
 
-        const isAIRequired = !text || text.trim().length < 20 || 
+        // Strategy B: Vision AI (Fallback or Forced)
+        // Nếu text quá ngắn (< 100 ký tự) sau khi parse native -> Có thể là file scan hoặc lỗi -> Dùng Vision
+        const isAIRequired = !text || text.trim().length < 100 || 
                              preferredOcrModel.includes('vision') || 
                              preferredOcrModel.includes('gpt');
 
         if (isAIRequired) {
-             await updateDbStatus(docId, `AI OCR kích hoạt (${preferredOcrModel})...`);
-             if (preferredOcrModel.startsWith('gpt')) {
-                 text = await callOpenAIVision(bufferBase64, preferredOcrModel);
+             const aiModelName = preferredOcrModel.includes('vision') ? preferredOcrModel : 'gemini-3-flash-preview';
+             await updateDbStatus(docId, `Kích hoạt Vision AI (${aiModelName})...`);
+             
+             if (aiModelName.startsWith('gpt')) {
+                 text = await callOpenAIVision(bufferBase64, aiModelName);
                  method = "openai-vision";
-             } else if (preferredOcrModel.includes('llama') && preferredOcrModel.includes('vision')) {
-                 text = await callGroqVision(bufferBase64, preferredOcrModel);
+             } else if (aiModelName.includes('llama') && aiModelName.includes('vision')) {
+                 text = await callGroqVision(bufferBase64, aiModelName);
                  method = "groq-vision";
              } else {
+                // Gemini Vision
                 const mimeType = getMimeType(fileName);
-                
                 if (mimeType !== 'application/octet-stream') {
-                    // Using dedicated ingestion Key
+                    const ingestionAi = new GoogleGenAI({ apiKey: ingestionApiKey });
                     const res = await ingestionAi.models.generateContent({
-                      model: 'gemini-3-flash-preview', // OCR always uses powerful model
+                      model: 'gemini-3-flash-preview', 
                       contents: {
                           parts: [
                             { inlineData: { data: bufferBase64, mimeType: mimeType } },
-                            { text: "Extract ALL text from this document. If it is a form, extract the fields and values. Return raw text only." }
+                            { text: "Extract ALL text from this document verbatim. Do not summarize. Just return the raw text found." }
                           ]
                       }
                     });
                     text = res.text || "";
-                    method = "gemini-ocr-vision-dedicated";
+                    method = "gemini-ocr-vision";
                 }
              }
         }
 
         if (!text || text.trim().length === 0) {
-            throw new Error(`Không thể trích xuất nội dung từ ${fileName}. Phương pháp cuối cùng (${method}) trả về rỗng.`);
+            throw new Error(`OCR thất bại: Không lấy được nội dung từ ${fileName}.`);
         }
 
-        let meta = { title: fileName, summary: "Tài liệu hệ thống", key_information: [], language: "vi" };
-        const analysisModel = configStep.analysisModel || 'gemini-3-flash-preview';
-        
-        try {
-           if (analysisModel.startsWith('gpt')) {
-                  const opts = {
+        // Return text to be used in next steps
+        // NOTE: Inngest has a payload limit (approx 4MB). If text is huge, we might need to truncate.
+        return { 
+            text: text.substring(0, 500000), // Safety limit ~500k chars to avoid Inngest payload errors
+            method,
+            textLength: text.length
+        };
+      });
+
+      // --- STEP 3: ANALYZE METADATA ---
+      // This step runs in a fresh process, resetting the timeout clock.
+      const metaResult = await step.run("analyze-metadata", async () => {
+          const ingestionAi = new GoogleGenAI({ apiKey: ingestionApiKey });
+          const analysisModel = configStep.analysisModel || 'gemini-3-flash-preview';
+          let meta = { title: fileName, summary: "Đang cập nhật...", key_information: [], language: "vi" };
+          const textSample = ocrResult.text.substring(0, 15000); // Analyze first 15k chars
+
+          try {
+            if (analysisModel.startsWith('gpt')) {
+                // OpenAI Logic...
+                 const opts = {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
                     body: JSON.stringify({
                         model: analysisModel,
-                        messages: [{ role: "user", content: `Trả về JSON {title, summary, key_information, language} cho văn bản: ${text.substring(0, 4000)}` }],
+                        messages: [{ role: "user", content: `Analyze and return JSON {title, summary, key_information, language}: ${textSample}` }],
                         response_format: { type: "json_object" }
                     })
                   };
                   const res = await (fetch as any)("https://api.openai.com/v1/chat/completions", opts);
                   const data = await res.json();
                   meta = JSON.parse(data.choices[0]?.message?.content || "{}");
-             } else {
-                 // Analysis also uses ingestion key
+            } else {
+                // Gemini Logic
                  const res = await ingestionAi.models.generateContent({
                     model: 'gemini-3-flash-preview',
-                    contents: { parts: [{ text: `Phân tích văn bản và trả về JSON {title, summary, key_information, language}: ${text.substring(0, 4000)}` }] },
+                    contents: { parts: [{ text: `Phân tích văn bản và trả về JSON {title, summary, key_information (array), language}: ${textSample}` }] },
                     config: { responseMimeType: 'application/json' }
                  });
                  meta = JSON.parse(res.text || "{}");
-             }
-        } catch (e) { }
-
-        const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
-        const { neon } = await import('@neondatabase/serverless');
-        const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
-        
-        await sql`UPDATE documents SET extracted_content = ${JSON.stringify({ ...meta, full_text_content: text, parse_method: method, text_length: text.length })}, status = 'indexed' WHERE id = ${docId}`;
-        
-        return { success: true, method, textLength: text.length, docId };
+            }
+          } catch (e) { console.warn("Analysis failed, using defaults"); }
+          
+          return meta;
       });
 
-      await step.run("generate-vectors", async () => {
+      // --- STEP 4: SAVE METADATA TO DB ---
+      await step.run("save-metadata-db", async () => {
           const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
           
-          const rows = await sql`SELECT extracted_content FROM documents WHERE id = ${docId}`;
-          if (rows.length === 0) return;
+          const finalData = {
+              ...metaResult,
+              full_text_content: ocrResult.text, // Store full text for hybrid search
+              parse_method: ocrResult.method,
+              text_length: ocrResult.textLength
+          };
+
+          await sql`UPDATE documents SET extracted_content = ${JSON.stringify(finalData)}, status = 'indexed' WHERE id = ${docId}`;
+      });
+
+      // --- STEP 5: GENERATE EMBEDDINGS & INDEX ---
+      // This is often the heaviest part after OCR. Isolating it prevents blocking.
+      await step.run("generate-vectors", async () => {
+          const preferredEmbeddingModel = configStep.embeddingModel || 'text-embedding-004';
+          const ingestionAi = new GoogleGenAI({ apiKey: ingestionApiKey });
           
-          let contentData = JSON.parse(rows[0].extracted_content);
-          const textToEmbed = contentData.full_text_content || "";
+          // Chunking simple: take meaningful first part for retrieval. 
+          // RAG quality improved by focusing on first 8000 tokens for embedding representation.
+          const textToEmbed = ocrResult.text.substring(0, 8000); 
           if (!textToEmbed) return;
 
           let vector: number[] = [];
@@ -296,37 +322,43 @@ const processFileInBackground = inngest.createFunction(
                const opts = {
                    method: "POST",
                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${process.env.OPEN_AI_API_KEY}` },
-                   body: JSON.stringify({ model: preferredEmbeddingModel, input: textToEmbed.substring(0, 3000) })
+                   body: JSON.stringify({ model: preferredEmbeddingModel, input: textToEmbed })
                };
                const res = await (fetch as any)("https://api.openai.com/v1/embeddings", opts);
                const data = await res.json();
                vector = data.data?.[0]?.embedding || [];
           } else {
-              // Vector generation uses ingestion key (Critical for avoiding Chat API limits)
-              vector = await getEmbeddingWithFallback(ingestionAi, textToEmbed.substring(0, 3000), preferredEmbeddingModel);
+              vector = await getEmbeddingWithFallback(ingestionAi, textToEmbed, preferredEmbeddingModel);
           }
 
           if (vector.length > 0 && process.env.PINECONE_API_KEY) {
               const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-              await pc.index(process.env.PINECONE_INDEX_NAME!).upsert([{ id: docId, values: vector, metadata: { filename: fileName, text: textToEmbed.substring(0, 4000) } }] as any);
-              await sql`UPDATE documents SET status = 'v3.0.0-indexed' WHERE id = ${docId}`;
+              await pc.index(process.env.PINECONE_INDEX_NAME!).upsert([{ 
+                  id: docId, 
+                  values: vector, 
+                  metadata: { 
+                      filename: fileName, 
+                      text: textToEmbed // Store snippet in metadata for context retrieval
+                  } 
+              }] as any);
+              
+              const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+              const { neon } = await import('@neondatabase/serverless');
+              const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
+              await sql`UPDATE documents SET status = 'v3.0.0-ready' WHERE id = ${docId}`;
           }
       });
 
-      return { 
-          status: "completed", 
-          docId, 
-          method: extractionResults.method, 
-          length: extractionResults.textLength 
-      };
+      return { status: "completed", docId, method: ocrResult.method };
 
     } catch (e: any) {
       await updateDbStatus(docId, e.message, true);
-      return { status: "failed", error: e.message };
+      throw e; // Re-throw to trigger Inngest retry logic
     }
   }
 );
 
+// ... keep deleteFileInBackground and syncDatabaseBackground same as before ...
 const deleteFileInBackground = inngest.createFunction(
     { id: "delete-file-background" },
     { event: "app/delete.file" },
@@ -395,25 +427,20 @@ const syncDatabaseBackground = inngest.createFunction(
              
              const pc = new Pinecone({ apiKey });
              
-             // Verify Index Exists First to avoid 404 on 'default'
              const indexes = await pc.listIndexes();
              const exists = indexes.indexes?.some(i => i.name === indexName);
              if (!exists) {
-                 throw new Error(`Index '${indexName}' does not exist. Available: ${indexes.indexes?.map(i => i.name).join(', ')}`);
+                 throw new Error(`Index '${indexName}' does not exist.`);
              }
 
              const index = pc.index(indexName);
-
-             // Connect to DB
              const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
              const { neon } = await import('@neondatabase/serverless');
              const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
 
-             // 1. Get DB IDs
              const dbDocs = await sql`SELECT id FROM documents`;
              const dbIdSet = new Set(dbDocs.map((d: any) => d.id));
 
-             // 2. Scan Pinecone
              let orphans: string[] = [];
              let pageToken: string | undefined = undefined;
              let count = 0;
@@ -429,12 +456,10 @@ const syncDatabaseBackground = inngest.createFunction(
                 }
                 pageToken = listResults.pagination?.next;
                 count++;
-                if (count > 50) break; // Limit safety loop
+                if (count > 50) break;
              } while (pageToken);
 
-             // 3. Delete Orphans
              if (orphans.length > 0) {
-                 // Batch delete 100
                  const toDelete = orphans.slice(0, 100); 
                  await index.deleteMany(toDelete);
                  return { deleted: toDelete.length, totalOrphansDetected: orphans.length };

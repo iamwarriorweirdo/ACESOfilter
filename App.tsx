@@ -167,42 +167,72 @@ const App: React.FC = () => {
     };
 
     const uploadFileHybrid = async (file: File): Promise<string> => {
-        const CLOUDINARY_LIMIT = 10 * 1024 * 1024;
+        const CLOUDINARY_LIMIT = 10 * 1024 * 1024; // 10MB
+        
+        // 1. Phân loại storage dựa trên kích thước
         if (file.size < CLOUDINARY_LIMIT) {
+            // Cố gắng dùng Cloudinary
             try {
-                const signData = await safeFetchJson('/api/app?handler=sign-cloudinary', {
+                const signRes = await fetch('/api/app?handler=sign-cloudinary', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ timestamp: Math.round(Date.now() / 1000) })
                 });
-                if (signData.cloudName && signData.apiKey && signData.signature) {
+
+                const signData = await signRes.json();
+
+                // Nếu Backend báo chưa cấu hình Cloudinary (fallback: true) -> Chuyển sang Supabase
+                if (!signRes.ok && signData.fallback) {
+                    console.warn("Cloudinary chưa cấu hình, chuyển sang Supabase.");
+                    // Fall through to Supabase logic below
+                } else if (!signRes.ok) {
+                    // Lỗi khác (vd: 500) -> Throw lỗi, KHÔNG fallback để tránh nhầm lẫn
+                    throw new Error(signData.error || "Lỗi lấy chữ ký Cloudinary");
+                } else {
+                    // Có chữ ký -> Upload lên Cloudinary
                     const formData = new FormData();
                     formData.append('file', file);
                     formData.append('api_key', signData.apiKey);
                     formData.append('timestamp', signData.timestamp);
                     formData.append('signature', signData.signature);
                     formData.append('folder', signData.folder);
+
                     const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${signData.cloudName}/auto/upload`, {
                         method: 'POST',
                         body: formData
                     });
-                    if (!uploadRes.ok) throw new Error(`Cloudinary upload failed`);
+                    
+                    if (!uploadRes.ok) {
+                        const err = await uploadRes.json();
+                        throw new Error(`Cloudinary Upload Failed: ${err.error?.message || 'Unknown error'}`);
+                    }
+                    
                     const data = await uploadRes.json();
-                    return data.secure_url;
+                    return data.secure_url; // DỪNG TẠI ĐÂY NẾU THÀNH CÔNG
                 }
-            } catch (e) { console.warn("Cloudinary error, fallback to Supabase"); }
+            } catch (e: any) {
+                // Nếu đã cố dùng Cloudinary mà lỗi -> Throw luôn, không tự động chuyển Supabase
+                // Để user biết là Cloudinary đang lỗi
+                console.error("Strict Cloudinary Upload Error:", e);
+                throw e;
+            }
         }
+
+        // 2. Logic Supabase (Cho file > 10MB hoặc khi Cloudinary chưa config)
         const signData = await safeFetchJson('/api/app?handler=upload-supabase', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename: file.name })
         });
+        
         if (!signData.uploadUrl) throw new Error("Supabase Signed URL missing");
+        
         const uploadRes = await fetch(signData.uploadUrl, {
             method: 'PUT',
             body: file,
             headers: { 'Content-Type': 'application/octet-stream' }
         });
+        
         if (!uploadRes.ok) throw new Error(`Supabase Upload Failed`);
         return signData.publicUrl;
     };
