@@ -3,9 +3,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { createClient } from '@supabase/supabase-js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Inngest } from 'inngest';
-import { handleUpload } from '@vercel/blob/client';
 import { Buffer } from 'node:buffer';
-import { Pinecone } from '@pinecone-database/pinecone';
 
 const inngest = new Inngest({ id: "hr-rag-app" });
 
@@ -59,15 +57,22 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
         
         try {
             const sql = await getSql();
-            await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
-            const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
-            if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
+            // Optimistic query - assume table exists to save time. If fails, create and retry.
+            try {
+                const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
+                if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
+            } catch (e) {
+                await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
+                const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
+                if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
+            }
         } catch (e: any) {
             return res.status(500).json({ error: `Lỗi Database: ${e.message}` });
         }
         return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu." });
     }
     
+    // For other actions (create, list), we can keep the safety checks as they are less frequent
     if (action === 'create') {
         if (!username || !password) return res.status(400).json({ error: 'Thiếu username hoặc password.' });
         try {
@@ -95,9 +100,10 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
 
 async function handleFiles(req: VercelRequest, res: VercelResponse) {
     const sql = await getSql();
-    await sql`CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, name TEXT, type TEXT, content TEXT, url TEXT, size BIGINT, upload_date BIGINT, extracted_content TEXT, folder_id TEXT, uploaded_by TEXT)`;
-    try { await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`; } catch (e) { }
-
+    
+    // REMOVED: Expensive DDL checks (CREATE TABLE / ALTER TABLE) from every request.
+    // We assume table exists. If not, the first insert will fail, caught, and then we create.
+    
     const method = req.method?.toUpperCase();
     if (method === 'GET') {
         const { id } = req.query;
@@ -132,16 +138,38 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
             return res.status(200).json({ success: true });
         }
 
-        await sql`
-            INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
-            VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
-            ON CONFLICT (id) DO UPDATE SET 
-                url = EXCLUDED.url, 
-                content = EXCLUDED.content,
-                extracted_content = EXCLUDED.extracted_content,
-                folder_id = EXCLUDED.folder_id,
-                status = EXCLUDED.status
-        `;
+        try {
+            await sql`
+                INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
+                VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
+                ON CONFLICT (id) DO UPDATE SET 
+                    url = EXCLUDED.url, 
+                    content = EXCLUDED.content,
+                    extracted_content = EXCLUDED.extracted_content,
+                    folder_id = EXCLUDED.folder_id,
+                    status = EXCLUDED.status
+            `;
+        } catch (e: any) {
+            // Fallback: If table doesn't exist, create it and retry.
+            if (e.message && (e.message.includes('relation "documents" does not exist') || e.message.includes('column'))) {
+                await sql`CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, name TEXT, type TEXT, content TEXT, url TEXT, size BIGINT, upload_date BIGINT, extracted_content TEXT, folder_id TEXT, uploaded_by TEXT)`;
+                try { await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`; } catch (_) { }
+                
+                // Retry Insert
+                await sql`
+                    INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
+                    VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
+                    ON CONFLICT (id) DO UPDATE SET 
+                        url = EXCLUDED.url, 
+                        content = EXCLUDED.content,
+                        extracted_content = EXCLUDED.extracted_content,
+                        folder_id = EXCLUDED.folder_id,
+                        status = EXCLUDED.status
+                `;
+            } else {
+                throw e;
+            }
+        }
         return res.status(200).json({ success: true });
     }
 
@@ -160,13 +188,10 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                 const targetUrl = target.url || target.content;
                 
                 if (targetUrl) {
-                    // console.log("Triggering cleanup for:", targetUrl);
                     await inngest.send({ 
                         name: "app/delete.file", 
                         data: { docId: target.id, url: targetUrl } 
                     });
-                } else {
-                    console.warn(`No URL found for doc ${docId}, skipping storage cleanup.`);
                 }
             }
 
@@ -186,14 +211,27 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
     let body = req.body || {};
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
     const { action } = body;
-    await sql`CREATE TABLE IF NOT EXISTS app_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at BIGINT)`;
+    
+    // Optimized: Only create table on CREATE action error, or list error.
+    
     if (action === 'list') {
-        const folders = await sql`SELECT * FROM app_folders ORDER BY name ASC`;
-        return res.status(200).json({ folders: folders.map((f: any) => ({ id: f.id, name: f.name, parentId: f.parent_id, createdAt: Number(f.created_at) })) });
+        try {
+            const folders = await sql`SELECT * FROM app_folders ORDER BY name ASC`;
+            return res.status(200).json({ folders: folders.map((f: any) => ({ id: f.id, name: f.name, parentId: f.parent_id, createdAt: Number(f.created_at) })) });
+        } catch (e: any) {
+            // Fallback for list
+            await sql`CREATE TABLE IF NOT EXISTS app_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at BIGINT)`;
+            return res.status(200).json({ folders: [] });
+        }
     }
     if (action === 'create') {
         const { id, name, parentId } = body;
-        await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${id}, ${name}, ${parentId || null}, ${Date.now()})`;
+        try {
+            await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${id}, ${name}, ${parentId || null}, ${Date.now()})`;
+        } catch (e) {
+            await sql`CREATE TABLE IF NOT EXISTS app_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at BIGINT)`;
+            await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${id}, ${name}, ${parentId || null}, ${Date.now()})`;
+        }
         return res.status(200).json({ success: true });
     }
     if (action === 'update') {
@@ -211,7 +249,7 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
 
 async function handleProxy(req: VercelRequest, res: VercelResponse) {
     let { url, contentType: forcedType } = req.query; 
-    if (Array.isArray(url)) url = url[0]; // Handle array param
+    if (Array.isArray(url)) url = url[0]; 
     
     if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
     
@@ -220,12 +258,10 @@ async function handleProxy(req: VercelRequest, res: VercelResponse) {
         const parsed = new URL(url);
         if (!ALLOWED.some(d => parsed.hostname.endsWith(d))) return res.status(403).json({ error: "Domain not allowed" });
         
-        // IMPORTANT: Ensure the URL is properly encoded (handling spaces, etc.)
         const targetUrl = parsed.toString();
 
         const upstream = await (fetch as any)(targetUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
         if (!upstream.ok) {
-            // Try to get text body to debug
             const errText = await upstream.text().catch(() => 'Unknown upstream error');
             return res.status(upstream.status).json({ error: `Upstream error (${upstream.status}): ${errText.substring(0, 200)}` });
         }
@@ -257,17 +293,13 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleSync(req: VercelRequest, res: VercelResponse) {
-    // 1. Check Env Vars first to avoid 404 on default index
     if (!process.env.PINECONE_API_KEY) {
-        return res.status(500).json({ error: "Chưa cấu hình PINECONE_API_KEY trong Environment Variables." });
+        return res.status(500).json({ error: "Chưa cấu hình PINECONE_API_KEY." });
     }
     if (!process.env.PINECONE_INDEX_NAME) {
-        return res.status(500).json({ error: "Chưa cấu hình PINECONE_INDEX_NAME trong Environment Variables." });
+        return res.status(500).json({ error: "Chưa cấu hình PINECONE_INDEX_NAME." });
     }
 
-    // 2. Trigger Inngest Background Job
-    // Lý do: Sync database (listPaginated) tốn nhiều thời gian (>10s), dễ gây timeout 504 trên Vercel Hobby.
-    // Chuyển sang background job giúp process chạy bền bỉ hơn.
     try {
         await inngest.send({ 
             name: "app/sync.database", 
@@ -276,7 +308,7 @@ async function handleSync(req: VercelRequest, res: VercelResponse) {
         
         return res.status(200).json({ 
             success: true, 
-            message: "Đã kích hoạt tiến trình đồng bộ ngầm. Vui lòng đợi 1-2 phút để hệ thống tự dọn dẹp." 
+            message: "Đã kích hoạt tiến trình đồng bộ ngầm." 
         });
 
     } catch (e: any) {
@@ -306,17 +338,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
                 
                 if (!cloudName || !apiKey || !apiSecret) {
-                    return res.status(400).json({ 
-                        error: "Cloudinary not configured", 
-                        fallback: true 
-                    });
+                    return res.status(400).json({ error: "Cloudinary not configured", fallback: true });
                 }
                 
                 const timestamp = Math.round(new Date().getTime() / 1000);
                 const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
                 return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
             } catch (e: any) {
-                console.error("Cloudinary Sign Error:", e);
                 return res.status(400).json({ error: "Cloudinary config error", fallback: true });
             }
         }
@@ -325,20 +353,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
              if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
              const { url, fileName, fileType, docId } = body;
              if (!url || !docId) return res.status(400).json({ error: "Missing required fields" });
+             
+             // Lightweight fire-and-forget to Inngest
              await inngest.send({ name: "app/process.file", data: { url, fileName, fileType, docId } });
              return res.status(200).json({ success: true });
         }
         if (action === 'config') {
             const sql = await getSql();
-            await sql`CREATE TABLE IF NOT EXISTS system_settings (id TEXT PRIMARY KEY, data TEXT)`;
-            if (req.method === 'POST') {
-                let body = req.body || {};
-                if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-                await sql`INSERT INTO system_settings (id, data) VALUES ('global', ${JSON.stringify(body)}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
-                return res.status(200).json({ success: true });
-            } else {
-                const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
-                return res.status(200).json(rows.length > 0 ? JSON.parse(rows[0].data) : {}); 
+            // Assuming table exists to save time. Fallback if not.
+            try {
+                if (req.method === 'POST') {
+                    let body = req.body || {};
+                    if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
+                    await sql`INSERT INTO system_settings (id, data) VALUES ('global', ${JSON.stringify(body)}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
+                    return res.status(200).json({ success: true });
+                } else {
+                    const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
+                    return res.status(200).json(rows.length > 0 ? JSON.parse(rows[0].data) : {}); 
+                }
+            } catch (e) {
+                await sql`CREATE TABLE IF NOT EXISTS system_settings (id TEXT PRIMARY KEY, data TEXT)`;
+                return res.status(200).json({});
             }
         }
         return res.status(404).json({ error: `Handler '${action}' not found` });
