@@ -153,25 +153,25 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             return (
                 <div className="space-y-6 p-6 h-full overflow-y-auto bg-muted/5">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="md:col-span-2 p-5 rounded-2xl bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-blue-400 mb-2">Tiêu đề tài liệu</div>
-                            <div className="text-lg md:text-xl font-bold text-blue-100 leading-tight">{data.title || document.name}</div>
+                        <div className="md:col-span-2 p-5 rounded-2xl bg-blue-50 dark:bg-gradient-to-br dark:from-blue-500/10 dark:to-blue-600/5 border border-blue-200 dark:border-blue-500/20 shadow-sm">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-400 mb-2">Tiêu đề tài liệu</div>
+                            <div className="text-lg md:text-xl font-bold text-blue-900 dark:text-blue-100 leading-tight">{data.title || document.name}</div>
                         </div>
-                        <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 flex flex-col justify-center">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2">Ngôn ngữ</div>
-                            <div className="text-2xl font-black text-emerald-100 uppercase">{data.language || "VN"}</div>
+                        <div className="p-5 rounded-2xl bg-emerald-50 dark:bg-gradient-to-br dark:from-emerald-500/10 dark:to-emerald-600/5 border border-emerald-200 dark:border-emerald-500/20 shadow-sm flex flex-col justify-center">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400 mb-2">Ngôn ngữ</div>
+                            <div className="text-2xl font-black text-emerald-900 dark:text-emerald-100 uppercase">{data.language || "VN"}</div>
                         </div>
                     </div>
                     <div className="p-5 rounded-2xl bg-card border border-border">
                          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-border/50">
                             <Activity size={16} className="text-orange-500" />
-                            <span className="text-xs font-bold uppercase">Tóm tắt văn bản</span>
+                            <span className="text-xs font-bold uppercase text-foreground">Tóm tắt văn bản</span>
                          </div>
-                         <p className="text-sm leading-relaxed">{data.summary || "Nội dung đang được phân tích."}</p>
+                         <p className="text-sm leading-relaxed text-foreground/90">{data.summary || "Nội dung đang được phân tích."}</p>
                     </div>
                     {data.key_information && (
                         <div className="p-5 rounded-2xl bg-card border border-border">
-                            <div className="flex items-center gap-2 mb-4"><CheckCircle size={16} className="text-purple-500" /><span className="text-xs font-bold uppercase">Thông tin chính</span></div>
+                            <div className="flex items-center gap-2 mb-4"><CheckCircle size={16} className="text-purple-500" /><span className="text-xs font-bold uppercase text-foreground">Thông tin chính</span></div>
                             <div className="space-y-3">
                                 {(Array.isArray(data.key_information) ? data.key_information : []).map((item: string, idx: number) => (
                                     <div key={idx} className="flex gap-3 text-sm text-foreground/80"><div className="w-1.5 h-1.5 rounded-full bg-purple-500 mt-1.5 shrink-0" />{item}</div>
@@ -200,7 +200,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                     <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
                         <FileText size={20} className="text-primary shrink-0" />
                         <div className="flex flex-col min-w-0">
-                            <h3 className="font-bold text-sm truncate">{document.name}</h3>
+                            <h3 className="font-bold text-sm truncate text-foreground">{document.name}</h3>
                             <button 
                                 onClick={handleDownload}
                                 className="flex items-center gap-1 text-[10px] font-bold text-primary hover:text-primary/80 transition-colors w-fit p-0 h-auto mt-0.5"
@@ -212,15 +212,13 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                     <div className="flex gap-2 shrink-0 items-start">
                         <button onClick={() => setActiveTab('preview')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'preview' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-muted-foreground hover:bg-muted'}`}>Preview</button>
                         <button onClick={() => setActiveTab('extracted')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'extracted' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-muted-foreground hover:bg-muted'}`}>JSON Index</button>
-                        <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-colors"><X size={20}/></button>
+                        <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-colors text-muted-foreground"><X size={20}/></button>
                     </div>
                 </div>
 
                 <div className="flex-1 overflow-hidden relative bg-background flex flex-col">
                     {activeTab === 'preview' ? (
                         <div className="flex-1 flex flex-col overflow-hidden">
-                            {/* REMOVED Secondary Header to maximize space */}
-                            
                             {/* Content Display Area */}
                             <div className={`flex-1 overflow-y-auto ${viewMode === 'native' ? 'bg-white' : 'bg-zinc-100 dark:bg-zinc-900'}`}>
                                 {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0" />}

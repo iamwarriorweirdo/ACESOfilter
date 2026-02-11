@@ -316,12 +316,42 @@ async function handleSync(req: VercelRequest, res: VercelResponse) {
     }
 }
 
+async function handleBackup(req: VercelRequest, res: VercelResponse) {
+    const sql = await getSql();
+    try {
+        const [users, documents, folders, settings] = await Promise.all([
+            sql`SELECT * FROM users`,
+            sql`SELECT * FROM documents`,
+            sql`SELECT * FROM app_folders`,
+            sql`SELECT * FROM system_settings`
+        ]);
+
+        const backupData = {
+            timestamp: Date.now(),
+            users,
+            documents,
+            folders,
+            settings,
+            version: "1.0"
+        };
+
+        const filename = `full_system_backup_${new Date().toISOString().split('T')[0]}.json`;
+        
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(JSON.stringify(backupData, null, 2));
+    } catch (e: any) {
+        return res.status(500).json({ error: `Backup failed: ${e.message}` });
+    }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     let { handler } = req.query;
     if (Array.isArray(handler)) handler = handler[0];
     const action = handler ? String(handler).toLowerCase() : null;
 
     if (action === 'proxy') return await handleProxy(req, res);
+    if (action === 'backup') return await handleBackup(req, res);
     
     try {
         if (!action) return res.status(200).json({ status: "API Ready" });
