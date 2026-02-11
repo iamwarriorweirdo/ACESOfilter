@@ -1,4 +1,3 @@
-
 import { Pinecone } from '@pinecone-database/pinecone';
 import { GoogleGenAI } from '@google/genai';
 import { neon } from '@neondatabase/serverless';
@@ -8,7 +7,6 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'text-embedding-004') {
     const openAiKey = process.env.OPEN_AI_API_KEY;
     
-    // 1. Try OpenAI if configured
     if (configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
          try {
              const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
@@ -22,7 +20,6 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
          } catch (oe) { }
     }
 
-    // 2. Try Gemini Primary (004)
     try {
         const res = await ai.models.embedContent({
             model: "text-embedding-004",
@@ -101,45 +98,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const seen = new Set<string>();
       
       const processContent = (raw: string | null) => {
-          if (!raw || raw.length < 50 || raw.includes("Đang chờ xử lý") || raw.includes("pending")) 
+          if (!raw) return "[[Nội dung trống]]";
+          if (raw.includes("Đang chờ xử lý") || raw.includes("pending")) 
               return "[[Nội dung chưa sẵn sàng]]";
+          
+          // Logic mới: Giải mã JSON nếu có
+          try {
+              const trimmed = raw.trim();
+              if (trimmed.startsWith('{')) {
+                  const data = JSON.parse(trimmed);
+                  // Ưu tiên lấy full text, sau đó đến summary, cuối cùng là chính nó
+                  return data.full_text_content || data.summary || raw;
+              }
+          } catch (e) {
+              // Không phải JSON, trả về text thô
+          }
           return raw;
       };
 
-      // CRITICAL FIX: Fetch ALL valid document names from NeonDB to validate Pinecone results
       const validDocsPromise = sql`SELECT name, extracted_content FROM documents`; 
       const vectorPromise = getSafeEmbedding(ai, userQuery, embeddingModel);
 
       const [allDocs, vector] = await Promise.all([validDocsPromise, vectorPromise]);
-      
-      // Create a Set of valid filenames for O(1) lookup
       const validFileNames = new Set(allDocs.map(d => d.name));
 
-      // 1. Keyword Search (Native Postgres ILIKE) - Already safe because it queries DB
-      // Filter the query to only current DB records
-      const keywordMatches = allDocs.filter((d: any) => 
-          d.name.toLowerCase().includes(userQuery.toLowerCase()) || 
-          (d.extracted_content && d.extracted_content.toLowerCase().includes(userQuery.toLowerCase()))
-      ).slice(0, 3); // Manual limit after filter
+      // 1. Keyword Search
+      const keywordMatches = allDocs.filter((d: any) => {
+          const content = d.extracted_content || "";
+          return d.name.toLowerCase().includes(userQuery.toLowerCase()) || 
+                 content.toLowerCase().includes(userQuery.toLowerCase());
+      }).slice(0, 3);
 
       for (const d of keywordMatches) {
           seen.add(d.name);
-          text += `File: "${d.name}"\nContent: ${processContent(d.extracted_content).substring(0, 3000)}\n---\n`;
+          text += `File: "${d.name}"\nContent: ${processContent(d.extracted_content).substring(0, 4000)}\n---\n`;
       }
 
-      // 2. Semantic Search (Pinecone) with VALIDATION
-      if (text.length < 4000 && vector.length > 0) {
+      // 2. Semantic Search (Pinecone)
+      if (text.length < 5000 && vector.length > 0) {
           try {
-              const queryResponse = await index.query({ vector, topK: 5, includeMetadata: true }); // Fetch more to allow for filtering
+              const queryResponse = await index.query({ vector, topK: 5, includeMetadata: true });
               for (const m of queryResponse.matches) {
                   const fname = m.metadata?.filename as string;
-                  
-                  // CRITICAL CHECK: Only include if file exists in NeonDB
-                  if (fname && validFileNames.has(fname) && !seen.has(fname)) {
-                      text += `File: "${fname}"\nContent: ${String(m.metadata?.text || "").substring(0, 2000)}\n---\n`;
+                  // Chuẩn hóa tên file để so sánh (tránh lỗi lệch ký tự hoặc hoa thường)
+                  const existsInDb = Array.from(validFileNames).some(name => name.toLowerCase() === fname?.toLowerCase());
+
+                  if (fname && existsInDb && !seen.has(fname)) {
+                      // Tìm nội dung từ DB thay vì dùng metadata của Pinecone (vì metadata Pinecone bị giới hạn độ dài)
+                      const dbMatch = allDocs.find(d => d.name.toLowerCase() === fname.toLowerCase());
+                      const content = dbMatch ? processContent(dbMatch.extracted_content) : String(m.metadata?.text || "");
+                      
+                      text += `File: "${fname}"\nContent: ${content.substring(0, 3000)}\n---\n`;
                       seen.add(fname);
-                  } else if (fname && !validFileNames.has(fname)) {
-                      console.log(`[RAG Filter] Skipped ghost file: ${fname} (found in Pinecone but missing in DB)`);
                   }
               }
           } catch (pe) { console.error("Pinecone query error", pe); }
@@ -149,11 +159,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const context = await contextPromise;
 
-    const systemInstruction = `Bạn là Trợ lý AI chuyên trách tài liệu nội bộ.
-QUY TẮC:
-1. CHỈ sử dụng thông tin từ phần "Context" bên dưới.
-2. Nếu không có trong Context, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống."
-3. Cung cấp link file bằng cú pháp [[File: Tên_File]] nếu nhắc tới file đó. Tuyệt đối KHÔNG bịa ra tên file không có trong Context.
+    const systemInstruction = `Bạn là Trợ lý AI chuyên trách tài liệu nội bộ của công ty.
+QUY TẮC PHẢN HỒI:
+1. CHỈ sử dụng thông tin từ phần "Context" bên dưới để trả lời.
+2. Nếu không có thông tin trong Context, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống. Hiện tại hệ thống có ghi nhận tập tin nhưng nội dung bên trong chưa sẵn sàng để truy xuất."
+3. Nếu thông tin có trong Context, hãy trả lời chi tiết và chuyên nghiệp.
+4. Luôn dẫn nguồn file bằng cú pháp [[File: Tên_File]] khi trích dẫn.
 
 Context:
 ${context || "Không tìm thấy dữ liệu liên quan."}`;
@@ -191,7 +202,7 @@ ${context || "Không tìm thấy dữ liệu liên quan."}`;
     if (!res.headersSent) {
         res.status(500).json({ error: error.message || "Internal Server Error" });
     } else {
-        res.write(`\n\n[Lỗi kết nối AI]: ${error.message}`);
+        res.write(`\n\n[Lỗi hệ thống]: ${error.message}`);
         res.end();
     }
   }
