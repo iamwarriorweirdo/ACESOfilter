@@ -194,7 +194,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
               for (const m of queryResponse.matches) {
                   const fname = m.metadata?.filename as string;
-                  const existsInDb = Array.from(validFileNames).some(name => name.toLowerCase() === fname?.toLowerCase());
+                  // Fix: Property 'toLowerCase' does not exist on type 'unknown'. Use explicit type check/cast.
+                  const existsInDb = Array.from(validFileNames).some((name: any) => typeof name === 'string' && name.toLowerCase() === fname?.toLowerCase());
 
                   if (fname && existsInDb && !seen.has(fname)) {
                       // Avoid duplicates

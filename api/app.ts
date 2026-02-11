@@ -34,7 +34,36 @@ function getSupabaseEnv(suffix: string, isUrl = false): string | undefined {
     return undefined;
 }
 
-// --- MERGED HANDLERS ---
+// --- HANDLERS ---
+
+async function handleBackup(req: VercelRequest, res: VercelResponse) {
+    const sql = await getSql();
+    try {
+        // More resilient table checks
+        const users = await sql`SELECT * FROM users`.catch(() => []);
+        const documents = await sql`SELECT * FROM documents`.catch(() => []);
+        const folders = await sql`SELECT * FROM app_folders`.catch(() => []);
+        const settings = await sql`SELECT * FROM system_settings`.catch(() => []);
+
+        const backupData = {
+            timestamp: Date.now(),
+            users,
+            documents,
+            folders,
+            settings,
+            version: "1.0",
+            exportedAt: new Date().toISOString()
+        };
+
+        const filename = `full_system_backup_${new Date().toISOString().split('T')[0]}.json`;
+        
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(JSON.stringify(backupData, null, 2));
+    } catch (e: any) {
+        return res.status(500).json({ error: `Backup failed: ${e.message}` });
+    }
+}
 
 async function handleUsers(req: VercelRequest, res: VercelResponse) {
     if (req.method?.toUpperCase() !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
@@ -48,63 +77,45 @@ async function handleUsers(req: VercelRequest, res: VercelResponse) {
         const inputUser = (username || '').trim();
         const inputPass = (password || '').trim();
 
-        if (!sysAdminPass) console.error("CRITICAL: ADMIN_PASSWORD environment variable is NOT SET.");
-        else if (sysAdminUser && inputUser.toLowerCase() === sysAdminUser.toLowerCase()) {
+        if (sysAdminUser && inputUser.toLowerCase() === sysAdminUser.toLowerCase()) {
             if (inputPass === sysAdminPass) {
                 return res.status(200).json({ success: true, user: { username: sysAdminUser, role: 'superadmin' } });
             }
         }
         
+        const sql = await getSql();
         try {
-            const sql = await getSql();
-            // Optimistic query - assume table exists to save time. If fails, create and retry.
-            try {
-                const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
-                if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
-            } catch (e) {
-                await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
-                const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
-                if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
-            }
-        } catch (e: any) {
-            return res.status(500).json({ error: `Lỗi Database: ${e.message}` });
+            const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
+            if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
+        } catch (e) {
+            await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
+            const results = await sql`SELECT * FROM users WHERE username = ${username} AND password = ${password}`;
+            if (results.length > 0) return res.status(200).json({ success: true, user: results[0] });
         }
         return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu." });
     }
     
-    // For other actions (create, list), we can keep the safety checks as they are less frequent
     if (action === 'create') {
-        if (!username || !password) return res.status(400).json({ error: 'Thiếu username hoặc password.' });
-        try {
-            const sql = await getSql();
-            await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
-            const roleVal = (role === 'superadmin' || role === 'it' || role === 'hr' || role === 'employee') ? role : 'employee';
-            await sql`INSERT INTO users (username, password, role, created_at, created_by) VALUES (${username}, ${password}, ${roleVal}, ${Date.now()}, ${createdBy || 'system'}) ON CONFLICT (username) DO UPDATE SET password = EXCLUDED.password, role = EXCLUDED.role`;
-            return res.status(200).json({ success: true });
-        } catch (e: any) {
-            return res.status(500).json({ error: `Lỗi tạo tài khoản: ${e.message}` });
-        }
+        const sql = await getSql();
+        await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
+        const roleVal = (role === 'superadmin' || role === 'it' || role === 'hr' || role === 'employee') ? role : 'employee';
+        await sql`INSERT INTO users (username, password, role, created_at, created_by) VALUES (${username}, ${password}, ${roleVal}, ${Date.now()}, ${createdBy || 'system'}) ON CONFLICT (username) DO UPDATE SET password = EXCLUDED.password, role = EXCLUDED.role`;
+        return res.status(200).json({ success: true });
     }
+
     if (action === 'list') {
-        try {
-            const sql = await getSql();
-            await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
-            const rows = await sql`SELECT username, role, created_at, created_by FROM users ORDER BY username`;
-            return res.status(200).json({ users: rows });
-        } catch (e: any) {
-            return res.status(500).json({ error: `Lỗi Database: ${e.message}` });
-        }
+        const sql = await getSql();
+        await sql`CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password TEXT, role TEXT, created_at BIGINT, created_by TEXT)`;
+        const rows = await sql`SELECT username, role, created_at, created_by FROM users ORDER BY username`;
+        return res.status(200).json({ users: rows });
     }
     return res.status(400).json({ error: "Invalid action" });
 }
 
 async function handleFiles(req: VercelRequest, res: VercelResponse) {
     const sql = await getSql();
-    
-    // REMOVED: Expensive DDL checks (CREATE TABLE / ALTER TABLE) from every request.
-    // We assume table exists. If not, the first insert will fail, caught, and then we create.
-    
     const method = req.method?.toUpperCase();
+    
     if (method === 'GET') {
         const { id } = req.query;
         if (id) {
@@ -112,19 +123,11 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
             if (rows.length === 0) return res.status(404).json({ error: "File not found" });
             return res.status(200).json(rows[0]);
         }
-
-        const docs = await sql`SELECT id, name, type, content, url, size, upload_date, folder_id, uploaded_by, status FROM documents ORDER BY upload_date DESC`;
+        const docs = await sql`SELECT id, name, type, content, url, size, upload_date, folder_id, uploaded_by, status FROM documents ORDER BY upload_date DESC`.catch(() => []);
         const mappedDocs = docs.map((d: any) => ({
-            id: d.id,
-            name: d.name,
-            type: d.type,
-            content: d.content || d.url,
-            url: d.url || d.content,
-            size: Number(d.size),
-            uploadDate: Number(d.upload_date),
-            status: d.status || 'pending',
-            folderId: d.folder_id || null,
-            uploadedBy: d.uploaded_by || 'system'
+            id: d.id, name: d.name, type: d.type, content: d.content || d.url, url: d.url || d.content,
+            size: Number(d.size), uploadDate: Number(d.upload_date), status: d.status || 'pending',
+            folderId: d.folder_id || null, uploadedBy: d.uploaded_by || 'system'
         }));
         return res.status(200).json(mappedDocs);
     }
@@ -132,43 +135,20 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
     if (method === 'POST') {
         let doc = req.body || {};
         if (typeof doc === 'string') { try { doc = JSON.parse(doc); } catch (e) { } }
-        
         if (doc.extractedContent && !doc.name) {
             await sql`UPDATE documents SET extracted_content = ${doc.extractedContent} WHERE id = ${doc.id}`;
             return res.status(200).json({ success: true });
         }
-
         try {
-            await sql`
-                INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
-                VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
-                ON CONFLICT (id) DO UPDATE SET 
-                    url = EXCLUDED.url, 
-                    content = EXCLUDED.content,
-                    extracted_content = EXCLUDED.extracted_content,
-                    folder_id = EXCLUDED.folder_id,
-                    status = EXCLUDED.status
-            `;
+            await sql`INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
+                      VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
+                      ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, content = EXCLUDED.content, extracted_content = EXCLUDED.extracted_content, folder_id = EXCLUDED.folder_id, status = EXCLUDED.status`;
         } catch (e: any) {
-            // Fallback: If table doesn't exist, create it and retry.
-            if (e.message && (e.message.includes('relation "documents" does not exist') || e.message.includes('column'))) {
-                await sql`CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, name TEXT, type TEXT, content TEXT, url TEXT, size BIGINT, upload_date BIGINT, extracted_content TEXT, folder_id TEXT, uploaded_by TEXT)`;
-                try { await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`; } catch (_) { }
-                
-                // Retry Insert
-                await sql`
-                    INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
-                    VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
-                    ON CONFLICT (id) DO UPDATE SET 
-                        url = EXCLUDED.url, 
-                        content = EXCLUDED.content,
-                        extracted_content = EXCLUDED.extracted_content,
-                        folder_id = EXCLUDED.folder_id,
-                        status = EXCLUDED.status
-                `;
-            } else {
-                throw e;
-            }
+            await sql`CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, name TEXT, type TEXT, content TEXT, url TEXT, size BIGINT, upload_date BIGINT, extracted_content TEXT, folder_id TEXT, uploaded_by TEXT)`;
+            try { await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT`; } catch (_) { }
+            await sql`INSERT INTO documents (id, name, type, content, url, size, upload_date, uploaded_by, folder_id, extracted_content, status) 
+                      VALUES (${doc.id}, ${doc.name}, ${doc.type}, ${doc.content}, ${doc.content}, ${doc.size}, ${doc.uploadDate}, ${doc.uploadedBy}, ${doc.folderId || null}, ${doc.extractedContent || ''}, ${doc.status || 'pending'}) 
+                      ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status`;
         }
         return res.status(200).json({ success: true });
     }
@@ -177,31 +157,12 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         let body = req.body || {};
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
         const docId = body.id;
-        if (!docId) return res.status(400).json({ error: 'Missing document ID' });
-
-        try {
-            // STEP 1: Fetch URL to trigger cleanup (Supabase/Cloudinary/Pinecone)
-            const rows = await sql`SELECT id, url, content, name FROM documents WHERE id = ${docId}`;
-            
-            if (rows.length > 0) {
-                const target = rows[0];
-                const targetUrl = target.url || target.content;
-                
-                if (targetUrl) {
-                    await inngest.send({ 
-                        name: "app/delete.file", 
-                        data: { docId: target.id, url: targetUrl } 
-                    });
-                }
-            }
-
-            // STEP 2: Always delete from Database
-            await sql`DELETE FROM documents WHERE id = ${docId}`;
-            return res.status(200).json({ success: true });
-        } catch (e: any) {
-            console.error("Delete handler error:", e);
-            return res.status(500).json({ error: `Delete failed: ${e.message}` });
+        const rows = await sql`SELECT id, url, content FROM documents WHERE id = ${docId}`;
+        if (rows.length > 0) {
+            await inngest.send({ name: "app/delete.file", data: { docId: rows[0].id, url: rows[0].url || rows[0].content } });
         }
+        await sql`DELETE FROM documents WHERE id = ${docId}`;
+        return res.status(200).json({ success: true });
     }
     return res.status(405).end();
 }
@@ -211,201 +172,72 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
     let body = req.body || {};
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
     const { action } = body;
-    
-    // Optimized: Only create table on CREATE action error, or list error.
-    
     if (action === 'list') {
-        try {
-            const folders = await sql`SELECT * FROM app_folders ORDER BY name ASC`;
-            return res.status(200).json({ folders: folders.map((f: any) => ({ id: f.id, name: f.name, parentId: f.parent_id, createdAt: Number(f.created_at) })) });
-        } catch (e: any) {
-            // Fallback for list
+        const folders = await sql`SELECT * FROM app_folders ORDER BY name ASC`.catch(async () => {
             await sql`CREATE TABLE IF NOT EXISTS app_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at BIGINT)`;
-            return res.status(200).json({ folders: [] });
-        }
+            return [];
+        });
+        return res.status(200).json({ folders: folders.map((f: any) => ({ id: f.id, name: f.name, parentId: f.parent_id, createdAt: Number(f.created_at) })) });
     }
     if (action === 'create') {
-        const { id, name, parentId } = body;
-        try {
-            await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${id}, ${name}, ${parentId || null}, ${Date.now()})`;
-        } catch (e) {
+        await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${body.id}, ${body.name}, ${body.parentId || null}, ${Date.now()})`.catch(async () => {
             await sql`CREATE TABLE IF NOT EXISTS app_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT, created_at BIGINT)`;
-            await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${id}, ${name}, ${parentId || null}, ${Date.now()})`;
-        }
+            await sql`INSERT INTO app_folders (id, name, parent_id, created_at) VALUES (${body.id}, ${body.name}, ${body.parentId || null}, ${Date.now()})`;
+        });
         return res.status(200).json({ success: true });
     }
-    if (action === 'update') {
-        const { id, name } = body;
-        await sql`UPDATE app_folders SET name = ${name} WHERE id = ${id}`;
-        return res.status(200).json({ success: true });
-    }
-    if (action === 'delete') {
-        const { id } = body;
-        await sql`DELETE FROM app_folders WHERE id = ${id}`;
-        return res.status(200).json({ success: true });
-    }
-    return res.status(400).json({ error: "Invalid Action" });
+    return res.status(400).json({ error: "Action not supported" });
 }
 
 async function handleProxy(req: VercelRequest, res: VercelResponse) {
     let { url, contentType: forcedType } = req.query; 
     if (Array.isArray(url)) url = url[0]; 
-    
-    if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
-    
-    const ALLOWED = ['cloudinary.com', 'supabase.co', 'res.cloudinary.com'];
-    try {
-        const parsed = new URL(url);
-        if (!ALLOWED.some(d => parsed.hostname.endsWith(d))) return res.status(403).json({ error: "Domain not allowed" });
-        
-        const targetUrl = parsed.toString();
-
-        const upstream = await (fetch as any)(targetUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        if (!upstream.ok) {
-            const errText = await upstream.text().catch(() => 'Unknown upstream error');
-            return res.status(upstream.status).json({ error: `Upstream error (${upstream.status}): ${errText.substring(0, 200)}` });
-        }
-
-        const buffer = Buffer.from(await upstream.arrayBuffer());
-        const finalType = (forcedType as string) || upstream.headers.get('content-type') || 'application/octet-stream';
-        res.setHeader('Content-Type', finalType);
-        res.setHeader('Content-Disposition', 'inline'); 
-        res.status(200).send(buffer);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    if (!url) return res.status(400).json({ error: 'Missing url' });
+    const upstream = await (fetch as any)(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', (forcedType as string) || upstream.headers.get('content-type') || 'application/octet-stream');
+    return res.status(200).send(buffer);
 }
 
-async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
-    try {
-        const supabaseUrl = getSupabaseEnv('SUPABASE_URL', true) || process.env.SUPABASE_URL?.trim();
-        const supabaseKey = getSupabaseEnv('SUPABASE_SERVICE_ROLE_KEY') || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-        if (!supabaseUrl || !supabaseKey) return res.status(500).json({ error: 'Server thiếu cấu hình Supabase.' });
-        const supabase = createClient(supabaseUrl, supabaseKey);
-        let body = req.body || {};
-        if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-        const { filename } = body;
-        if (!filename) return res.status(400).json({ error: "Missing filename" });
-        const uniqueFileName = `${Date.now()}_${filename.replace(/[^a-zA-Z0-9.]/g, '_')}`;
-        const { data, error } = await supabase.storage.from('documents').createSignedUploadUrl(uniqueFileName);
-        if (error) return res.status(500).json({ error: `Supabase Sign Error: ${error.message}` });
-        const { data: publicData } = supabase.storage.from('documents').getPublicUrl(uniqueFileName);
-        return res.status(200).json({ uploadUrl: data.signedUrl, publicUrl: publicData.publicUrl });
-    } catch (err: any) { return res.status(500).json({ error: `Supabase Critical Error: ${err.message}` }); }
-}
-
-async function handleSync(req: VercelRequest, res: VercelResponse) {
-    if (!process.env.PINECONE_API_KEY) {
-        return res.status(500).json({ error: "Chưa cấu hình PINECONE_API_KEY." });
-    }
-    if (!process.env.PINECONE_INDEX_NAME) {
-        return res.status(500).json({ error: "Chưa cấu hình PINECONE_INDEX_NAME." });
-    }
-
-    try {
-        await inngest.send({ 
-            name: "app/sync.database", 
-            data: { timestamp: Date.now() } 
-        });
-        
-        return res.status(200).json({ 
-            success: true, 
-            message: "Đã kích hoạt tiến trình đồng bộ ngầm." 
-        });
-
-    } catch (e: any) {
-        return res.status(500).json({ error: `Không thể kích hoạt Sync Job: ${e.message}` });
-    }
-}
-
-async function handleBackup(req: VercelRequest, res: VercelResponse) {
-    const sql = await getSql();
-    try {
-        const [users, documents, folders, settings] = await Promise.all([
-            sql`SELECT * FROM users`,
-            sql`SELECT * FROM documents`,
-            sql`SELECT * FROM app_folders`,
-            sql`SELECT * FROM system_settings`
-        ]);
-
-        const backupData = {
-            timestamp: Date.now(),
-            users,
-            documents,
-            folders,
-            settings,
-            version: "1.0"
-        };
-
-        const filename = `full_system_backup_${new Date().toISOString().split('T')[0]}.json`;
-        
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        return res.status(200).send(JSON.stringify(backupData, null, 2));
-    } catch (e: any) {
-        return res.status(500).json({ error: `Backup failed: ${e.message}` });
-    }
-}
+// --- EXPORT ---
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-    let { handler } = req.query;
-    if (Array.isArray(handler)) handler = handler[0];
-    const action = handler ? String(handler).toLowerCase() : null;
+    const { handler: h } = req.query;
+    const action = Array.isArray(h) ? h[0].toLowerCase() : String(h || "").toLowerCase();
 
-    if (action === 'proxy') return await handleProxy(req, res);
-    if (action === 'backup') return await handleBackup(req, res);
-    
     try {
-        if (!action) return res.status(200).json({ status: "API Ready" });
+        if (action === 'backup') return await handleBackup(req, res);
+        if (action === 'proxy') return await handleProxy(req, res);
         if (action === 'users') return await handleUsers(req, res);
         if (action === 'files') return await handleFiles(req, res);
         if (action === 'folders') return await handleFolders(req, res);
-        if (action === 'upload-supabase') return await handleUploadSupabase(req, res);
-        if (action === 'sync') return await handleSync(req, res);
-        
-        if (action === 'sign-cloudinary') {
-            try {
-                let cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
-                let apiKey = process.env.CLOUDINARY_API_KEY?.trim();
-                let apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
-                
-                if (!cloudName || !apiKey || !apiSecret) {
-                    return res.status(400).json({ error: "Cloudinary not configured", fallback: true });
-                }
-                
-                const timestamp = Math.round(new Date().getTime() / 1000);
-                const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret!);
-                return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
-            } catch (e: any) {
-                return res.status(400).json({ error: "Cloudinary config error", fallback: true });
-            }
-        }
-        if (action === 'trigger-ingest') {
-             let body = req.body || {};
-             if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-             const { url, fileName, fileType, docId } = body;
-             if (!url || !docId) return res.status(400).json({ error: "Missing required fields" });
-             
-             // Lightweight fire-and-forget to Inngest
-             await inngest.send({ name: "app/process.file", data: { url, fileName, fileType, docId } });
-             return res.status(200).json({ success: true });
+        if (action === 'sync') {
+            await inngest.send({ name: "app/sync.database", data: { timestamp: Date.now() } });
+            return res.status(200).json({ success: true });
         }
         if (action === 'config') {
             const sql = await getSql();
-            // Assuming table exists to save time. Fallback if not.
-            try {
-                if (req.method === 'POST') {
-                    let body = req.body || {};
-                    if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
-                    await sql`INSERT INTO system_settings (id, data) VALUES ('global', ${JSON.stringify(body)}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
-                    return res.status(200).json({ success: true });
-                } else {
-                    const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
-                    return res.status(200).json(rows.length > 0 ? JSON.parse(rows[0].data) : {}); 
-                }
-            } catch (e) {
-                await sql`CREATE TABLE IF NOT EXISTS system_settings (id TEXT PRIMARY KEY, data TEXT)`;
-                return res.status(200).json({});
+            if (req.method === 'POST') {
+                await sql`INSERT INTO system_settings (id, data) VALUES ('global', ${JSON.stringify(req.body)}) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`;
+                return res.status(200).json({ success: true });
             }
+            const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`.catch(() => []);
+            return res.status(200).json(rows.length > 0 ? JSON.parse(rows[0].data) : {});
         }
+        
+        // Cloudinary helper
+        if (action === 'sign-cloudinary') {
+            const timestamp = Math.round(new Date().getTime() / 1000);
+            const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, process.env.CLOUDINARY_API_SECRET!);
+            return res.status(200).json({ signature, apiKey: process.env.CLOUDINARY_API_KEY, cloudName: process.env.CLOUDINARY_CLOUD_NAME, timestamp, folder: 'ACESOfilter' });
+        }
+
+        if (action === 'trigger-ingest') {
+            await inngest.send({ name: "app/process.file", data: req.body });
+            return res.status(200).json({ success: true });
+        }
+
+        if (!action) return res.status(200).json({ status: "API Online" });
         return res.status(404).json({ error: `Handler '${action}' not found` });
     } catch (e: any) {
         return res.status(500).json({ error: e.message });

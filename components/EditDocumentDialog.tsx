@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Document, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
-import { X, FileText, ImageIcon, Eye, FileSpreadsheet, Loader2, Download, FileJson, AlertTriangle, Globe, Monitor, Terminal, Activity, ChevronRight, Clock, CheckCircle } from 'lucide-react';
+import { X, FileText, Loader2, Download, Terminal, Activity, CheckCircle } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
 
@@ -51,14 +51,12 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
         } catch (error) { console.error(error); }
     };
 
-    // Polling logic for background indexing
     useEffect(() => {
         let interval: any;
         let pollCount = 0;
         const MAX_POLLS = 60; 
 
         if (isOpen) setTimeoutError(false);
-
         if (logContainerRef.current) {
             logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
         }
@@ -152,16 +150,18 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             const data = JSON.parse(content);
             return (
                 <div className="space-y-6 p-6 h-full overflow-y-auto bg-muted/5">
+                    {/* Title and Language Blocks with fixed Contrast */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="md:col-span-2 p-5 rounded-2xl bg-blue-50 dark:bg-gradient-to-br dark:from-blue-500/10 dark:to-blue-600/5 border border-blue-200 dark:border-blue-500/20 shadow-sm">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-400 mb-2">Tiêu đề tài liệu</div>
-                            <div className="text-lg md:text-xl font-bold text-blue-900 dark:text-blue-100 leading-tight">{data.title || document.name}</div>
+                        <div className="md:col-span-2 p-5 rounded-2xl border bg-blue-50 border-blue-200 dark:bg-blue-900/30 dark:border-blue-700/50 shadow-sm">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-blue-600 dark:text-blue-400 mb-2">Tiêu đề tài liệu</div>
+                            <div className="text-lg md:text-xl font-bold text-blue-950 dark:text-blue-100 leading-tight">{data.title || document.name}</div>
                         </div>
-                        <div className="p-5 rounded-2xl bg-emerald-50 dark:bg-gradient-to-br dark:from-emerald-500/10 dark:to-emerald-600/5 border border-emerald-200 dark:border-emerald-500/20 shadow-sm flex flex-col justify-center">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400 mb-2">Ngôn ngữ</div>
-                            <div className="text-2xl font-black text-emerald-900 dark:text-emerald-100 uppercase">{data.language || "VN"}</div>
+                        <div className="p-5 rounded-2xl border bg-emerald-50 border-emerald-200 dark:bg-emerald-900/30 dark:border-emerald-700/50 shadow-sm flex flex-col justify-center">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-2">Ngôn ngữ</div>
+                            <div className="text-2xl font-black text-emerald-950 dark:text-emerald-100 uppercase">{data.language || "VI"}</div>
                         </div>
                     </div>
+                    
                     <div className="p-5 rounded-2xl bg-card border border-border">
                          <div className="flex items-center gap-2 mb-3 pb-3 border-b border-border/50">
                             <Activity size={16} className="text-orange-500" />
@@ -169,12 +169,19 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                          </div>
                          <p className="text-sm leading-relaxed text-foreground/90">{data.summary || "Nội dung đang được phân tích."}</p>
                     </div>
+
                     {data.key_information && (
                         <div className="p-5 rounded-2xl bg-card border border-border">
-                            <div className="flex items-center gap-2 mb-4"><CheckCircle size={16} className="text-purple-500" /><span className="text-xs font-bold uppercase text-foreground">Thông tin chính</span></div>
+                            <div className="flex items-center gap-2 mb-4">
+                                <CheckCircle size={16} className="text-purple-500" />
+                                <span className="text-xs font-bold uppercase text-foreground">Thông tin chính</span>
+                            </div>
                             <div className="space-y-3">
                                 {(Array.isArray(data.key_information) ? data.key_information : []).map((item: string, idx: number) => (
-                                    <div key={idx} className="flex gap-3 text-sm text-foreground/80"><div className="w-1.5 h-1.5 rounded-full bg-purple-500 mt-1.5 shrink-0" />{item}</div>
+                                    <div key={idx} className="flex gap-3 text-sm text-foreground/80">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-purple-500 mt-1.5 shrink-0" />
+                                        {item}
+                                    </div>
                                 ))}
                             </div>
                         </div>
@@ -195,7 +202,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-2 md:p-6 animate-fade-in">
             <div className="bg-card w-full max-w-6xl h-full md:h-[90vh] rounded-xl border border-border flex flex-col shadow-2xl overflow-hidden">
-                {/* Main Header with Download moved here */}
                 <div className="px-4 py-3 border-b border-border flex items-center justify-between bg-muted/20">
                     <div className="flex items-center gap-3 flex-1 min-w-0 mr-4">
                         <FileText size={20} className="text-primary shrink-0" />
@@ -219,7 +225,6 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 <div className="flex-1 overflow-hidden relative bg-background flex flex-col">
                     {activeTab === 'preview' ? (
                         <div className="flex-1 flex flex-col overflow-hidden">
-                            {/* Content Display Area */}
                             <div className={`flex-1 overflow-y-auto ${viewMode === 'native' ? 'bg-white' : 'bg-zinc-100 dark:bg-zinc-900'}`}>
                                 {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0" />}
                                 {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0" />}
