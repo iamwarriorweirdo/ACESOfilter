@@ -375,4 +375,68 @@ const deleteFileInBackground = inngest.createFunction(
     }
 );
 
-export default serve({ client: inngest, functions: [processFileInBackground, deleteFileInBackground] });
+const syncDatabaseBackground = inngest.createFunction(
+    { id: "sync-database-background" },
+    { event: "app/sync.database" },
+    async ({ event, step }) => {
+        const results = await step.run("sync-execution", async () => {
+             const apiKey = process.env.PINECONE_API_KEY;
+             const indexName = process.env.PINECONE_INDEX_NAME;
+             
+             if (!apiKey || !indexName) throw new Error("Missing PINECONE_API_KEY or PINECONE_INDEX_NAME");
+             
+             const pc = new Pinecone({ apiKey });
+             
+             // Verify Index Exists First to avoid 404 on 'default'
+             const indexes = await pc.listIndexes();
+             const exists = indexes.indexes?.some(i => i.name === indexName);
+             if (!exists) {
+                 throw new Error(`Index '${indexName}' does not exist. Available: ${indexes.indexes?.map(i => i.name).join(', ')}`);
+             }
+
+             const index = pc.index(indexName);
+
+             // Connect to DB
+             const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+             const { neon } = await import('@neondatabase/serverless');
+             const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
+
+             // 1. Get DB IDs
+             const dbDocs = await sql`SELECT id FROM documents`;
+             const dbIdSet = new Set(dbDocs.map((d: any) => d.id));
+
+             // 2. Scan Pinecone
+             let orphans: string[] = [];
+             let pageToken: string | undefined = undefined;
+             let count = 0;
+
+             do {
+                const listResults = await index.listPaginated({ limit: 100, paginationToken: pageToken });
+                if (listResults.vectors) {
+                    for (const v of listResults.vectors) {
+                        if (v.id && !dbIdSet.has(v.id)) {
+                            orphans.push(v.id);
+                        }
+                    }
+                }
+                pageToken = listResults.pagination?.next;
+                count++;
+                if (count > 50) break; // Limit safety loop
+             } while (pageToken);
+
+             // 3. Delete Orphans
+             if (orphans.length > 0) {
+                 // Batch delete 100
+                 const toDelete = orphans.slice(0, 100); 
+                 await index.deleteMany(toDelete);
+                 return { deleted: toDelete.length, totalOrphansDetected: orphans.length };
+             }
+
+             return { deleted: 0, status: "Clean" };
+        });
+
+        return results;
+    }
+);
+
+export default serve({ client: inngest, functions: [processFileInBackground, deleteFileInBackground, syncDatabaseBackground] });

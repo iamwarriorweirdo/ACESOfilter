@@ -257,53 +257,30 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
 }
 
 async function handleSync(req: VercelRequest, res: VercelResponse) {
-    const sql = await getSql();
+    // 1. Check Env Vars first to avoid 404 on default index
+    if (!process.env.PINECONE_API_KEY) {
+        return res.status(500).json({ error: "Chưa cấu hình PINECONE_API_KEY trong Environment Variables." });
+    }
+    if (!process.env.PINECONE_INDEX_NAME) {
+        return res.status(500).json({ error: "Chưa cấu hình PINECONE_INDEX_NAME trong Environment Variables." });
+    }
+
+    // 2. Trigger Inngest Background Job
+    // Lý do: Sync database (listPaginated) tốn nhiều thời gian (>10s), dễ gây timeout 504 trên Vercel Hobby.
+    // Chuyển sang background job giúp process chạy bền bỉ hơn.
     try {
-        if (!process.env.PINECONE_API_KEY || !process.env.PINECONE_INDEX_NAME) {
-            return res.status(400).json({ error: "Pinecone credentials missing." });
-        }
-        
-        const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-        const index = pc.index(process.env.PINECONE_INDEX_NAME);
-
-        // 1. Get all valid IDs from DB
-        const dbDocs = await sql`SELECT id FROM documents`;
-        const dbIdSet = new Set(dbDocs.map((d: any) => d.id));
-
-        // 2. Scan Pinecone for orphans (Iterate via listPaginated)
-        // Note: For large DBs this might be slow, but suitable for admin trigger.
-        let pineconeIds: string[] = [];
-        let pageToken: string | undefined = undefined;
-        let orphans: string[] = [];
-
-        do {
-            const listResults = await index.listPaginated({ limit: 100, paginationToken: pageToken });
-            if (listResults.vectors) {
-                for (const v of listResults.vectors) {
-                    if (v.id && !dbIdSet.has(v.id)) {
-                        orphans.push(v.id);
-                    }
-                }
-            }
-            pageToken = listResults.pagination?.next;
-        } while (pageToken);
-
-        // 3. Delete orphans
-        if (orphans.length > 0) {
-            // Delete in batches of 1000
-            for (let i = 0; i < orphans.length; i += 1000) {
-                 await index.deleteMany(orphans.slice(i, i + 1000));
-            }
-        }
+        await inngest.send({ 
+            name: "app/sync.database", 
+            data: { timestamp: Date.now() } 
+        });
         
         return res.status(200).json({ 
             success: true, 
-            message: `Synced. Deleted ${orphans.length} ghost vectors.`,
-            orphansFound: orphans.length 
+            message: "Đã kích hoạt tiến trình đồng bộ ngầm. Vui lòng đợi 1-2 phút để hệ thống tự dọn dẹp." 
         });
 
     } catch (e: any) {
-        return res.status(500).json({ error: `Sync failed: ${e.message}` });
+        return res.status(500).json({ error: `Không thể kích hoạt Sync Job: ${e.message}` });
     }
 }
 

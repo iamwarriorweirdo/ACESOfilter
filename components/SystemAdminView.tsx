@@ -56,7 +56,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
             const res = await fetch('/api/app?handler=sync');
             const data = await res.json();
             if (data.success) {
-                alert(`Đồng bộ thành công! Đã dọn dẹp ${data.orphansFound} vector rác.`);
+                alert(data.message || "Đang đồng bộ ngầm...");
             } else {
                 alert("Đồng bộ thất bại: " + data.error);
             }
@@ -175,6 +175,17 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             <option value="gpt-4o-mini">GPT-4o Mini</option>
                                         </optgroup>
                                     </select>
+                                </ConfigField>
+                                
+                                <ConfigField label="Giới hạn Upload" sub="Dung lượng tối đa mỗi file (MB)">
+                                    <input 
+                                        type="number"
+                                        min="1"
+                                        max="500"
+                                        value={localConfig.maxFileSizeMB || 100}
+                                        onChange={e => handleLocalChange('maxFileSizeMB', parseInt(e.target.value) || 100)}
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                    />
                                 </ConfigField>
                             </div>
                         </div>

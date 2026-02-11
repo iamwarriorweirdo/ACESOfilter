@@ -209,9 +209,19 @@ const App: React.FC = () => {
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, folderId: string | null) => {
         if (!e.target.files) return;
+        
+        // CHECK FILE SIZE LIMIT
+        const files = Array.from(e.target.files) as File[];
+        const maxSizeBytes = (config.maxFileSizeMB || 100) * 1024 * 1024;
+        const oversizedFiles = files.filter(f => f.size > maxSizeBytes);
+        
+        if (oversizedFiles.length > 0) {
+            alert(`Có ${oversizedFiles.length} file vượt quá giới hạn ${config.maxFileSizeMB}MB:\n${oversizedFiles.map(f => `- ${f.name} (${(f.size/1024/1024).toFixed(1)}MB)`).join('\n')}`);
+            return;
+        }
+
         setIsUploading(true);
         setShowUploadResultModal(false);
-        const files = Array.from(e.target.files) as File[];
         const results: { fileName: string; success: boolean; error?: string }[] = new Array(files.length);
         const processOne = async (file: File, index: number) => {
             try {
