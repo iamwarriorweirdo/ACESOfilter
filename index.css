@@ -1,19 +1,20 @@
 :root {
-  --background: 249 250 251;
-  --foreground: 17 24 39;
-  --card: 255 255 255;
-  --border: 229 231 235;
-  --muted: 243 244 246;
-  --muted-foreground: 107 114 128;
-  --primary: 37 99 235;
+  --background: 249 250 251; /* Gray 50 */
+  --foreground: 15 23 42;    /* Slate 900 (Darker for readability) */
+  --card: 255 255 255;       /* Pure White */
+  --border: 226 232 240;     /* Slate 200 */
+  --muted: 241 245 249;      /* Slate 100 */
+  --muted-foreground: 100 116 139; /* Slate 500 */
+  --primary: 37 99 235;      /* Blue 600 */
   --primary-foreground: 255 255 255;
-  --secondary: 243 244 246;
-  --secondary-foreground: 17 24 39;
+  --secondary: 241 245 249;
+  --secondary-foreground: 15 23 42;
   --accent: 59 130 246;
   
-  --glass-bg: rgba(255, 255, 255, 0.7);
-  --glass-border: rgba(255, 255, 255, 0.2);
-  --glass-glow: 0 0 20px rgba(59, 130, 246, 0.1);
+  /* Light mode glass: More opaque white, darker border */
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.08); 
+  --glass-glow: 0 4px 20px rgba(0, 0, 0, 0.05);
   
   color-scheme: light;
 }
@@ -31,6 +32,7 @@
   --secondary-foreground: 243 244 246;
   --accent: 79 70 229;
   
+  /* Dark mode glass: Translucent dark, white border */
   --glass-bg: rgba(15, 23, 42, 0.6);
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-glow: 0 0 30px rgba(99, 102, 241, 0.15);
@@ -90,18 +92,27 @@ body {
 }
 
 .glass-card {
-  background: rgba(var(--card) / 0.4);
+  background: rgba(var(--card) / 0.7); /* Increased opacity for light mode visibility */
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.dark .glass-card {
+  background: rgba(var(--card) / 0.4);
+}
+
 .glass-card:hover {
-  background: rgba(var(--card) / 0.6);
+  background: rgba(var(--card) / 0.9);
   border-color: rgba(var(--primary) / 0.3);
   transform: translateY(-4px);
-  box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.1); /* Softer shadow for light mode */
+}
+
+.dark .glass-card:hover {
+    background: rgba(var(--card) / 0.6);
+    box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.3);
 }
 
 /* Bento Grid Utilities */

@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Document, Language, Message, ChatSession, Folder as FolderType, Theme } from '../types';
 import ChatInterface from './ChatInterface';
@@ -15,7 +14,7 @@ interface UserViewProps {
     onSubmit: (e: React.FormEvent) => void;
     hasContext: boolean;
     language: Language;
-    setLanguage: (lang: Language) => void; // Added
+    setLanguage: (lang: Language) => void; 
     onClearChat: () => void;
     onViewDocument: (filename: string) => void;
     sessions: ChatSession[];
@@ -23,9 +22,9 @@ interface UserViewProps {
     onNewChat: () => void;
     onSelectSession: (session: ChatSession) => void;
     onDeleteSession: (sessionId: string) => void;
-    theme: Theme; // Added
-    toggleTheme: () => void; // Added
-    onLogout: () => void; // Added
+    theme: Theme; 
+    toggleTheme: () => void; 
+    onLogout: () => void; 
     currentUser: any;
 }
 
@@ -117,9 +116,9 @@ const UserView: React.FC<UserViewProps> = ({
                 <div className="max-w-[1400px] mx-auto space-y-12">
 
                     {/* Header Section - Premium Floating */}
-                    <div className="glass-panel sticky top-0 z-30 p-6 md:px-10 rounded-[2rem] flex flex-col md:flex-row justify-between items-center gap-8 shadow-2xl border-white/5">
+                    <div className="glass-panel sticky top-0 z-30 p-6 md:px-10 rounded-[2rem] flex flex-col md:flex-row justify-between items-center gap-8 shadow-2xl border-black/5 dark:border-white/5">
                         <div className="flex flex-col gap-1 items-center md:items-start text-center md:text-left">
-                            <h2 className="text-4xl font-black text-foreground tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-foreground to-foreground/60">
+                            <h2 className="text-4xl font-black text-foreground tracking-tighter">
                                 {t.welcomeUser}
                             </h2>
                             <div className="flex items-center gap-2">
@@ -128,18 +127,18 @@ const UserView: React.FC<UserViewProps> = ({
                             </div>
                         </div>
 
-                        <div className="flex items-center gap-4 bg-muted/10 p-1.5 rounded-2xl border border-white/5">
+                        <div className="flex items-center gap-4 bg-muted/50 p-1.5 rounded-2xl border border-black/5 dark:border-white/5">
                             <button onClick={() => {
                                 const langs: Language[] = ['en', 'vi', 'zh'];
                                 const next = langs[(langs.indexOf(language) + 1) % langs.length];
                                 setLanguage(next);
-                            }} className="px-4 py-2 rounded-xl hover:bg-muted/40 transition-all text-muted-foreground flex items-center gap-2 font-black text-[10px] uppercase">
+                            }} className="px-4 py-2 rounded-xl hover:bg-background transition-all text-muted-foreground flex items-center gap-2 font-black text-[10px] uppercase">
                                 <Globe size={16} className="text-primary" /> {language}
                             </button>
-                            <button onClick={toggleTheme} className="p-2.5 rounded-xl hover:bg-muted/40 transition-all text-muted-foreground">
+                            <button onClick={toggleTheme} className="p-2.5 rounded-xl hover:bg-background transition-all text-muted-foreground">
                                 {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
                             </button>
-                            <div className="h-6 w-px bg-white/10 mx-1"></div>
+                            <div className="h-6 w-px bg-border mx-1"></div>
                             <button onClick={onLogout} className="group relative flex items-center gap-2 px-6 py-2.5 overflow-hidden bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-xl transition-all text-[10px] font-black uppercase tracking-widest">
                                 <div className="absolute inset-0 bg-red-500 translate-y-full group-hover:translate-y-0 transition-transform duration-300 -z-10" />
                                 <LogOut size={14} /> {t.back}
@@ -150,7 +149,7 @@ const UserView: React.FC<UserViewProps> = ({
                     {/* Navigation & Search Bar */}
                     <div className="flex flex-col md:flex-row gap-6 relative z-20">
                         {/* Breadcrumbs - Glassy */}
-                        <div className="flex-1 flex items-center gap-2 glass-panel px-5 py-3 rounded-2xl overflow-x-auto shadow-xl border-white/5">
+                        <div className="flex-1 flex items-center gap-2 glass-panel px-5 py-3 rounded-2xl overflow-x-auto shadow-xl border-black/5 dark:border-white/5">
                             <button
                                 onClick={() => setCurrentFolderId(null)}
                                 className={`p-2.5 rounded-xl hover:bg-muted/40 transition-all ${!currentFolderId ? 'text-primary bg-primary/10 shadow-inner' : 'text-muted-foreground hover:scale-110'}`}
@@ -162,7 +161,7 @@ const UserView: React.FC<UserViewProps> = ({
                                     <ChevronRight size={14} className="text-muted-foreground/30" />
                                     <button
                                         onClick={() => setCurrentFolderId(folder!.id)}
-                                        className="text-[10px] font-black uppercase tracking-widest hover:text-primary px-4 py-2 rounded-xl hover:bg-muted/40 transition-all"
+                                        className="text-[10px] font-black uppercase tracking-widest hover:text-primary px-4 py-2 rounded-xl hover:bg-muted/40 transition-all text-foreground"
                                     >
                                         {folder!.name}
                                     </button>
@@ -180,7 +179,7 @@ const UserView: React.FC<UserViewProps> = ({
                                 placeholder={t.searchDocs}
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full glass-panel border-white/10 rounded-2xl pl-14 pr-6 py-4 text-sm font-bold focus:outline-none ring-4 ring-transparent focus:ring-primary/10 transition-all shadow-xl relative z-0"
+                                className="w-full glass-panel border-black/5 dark:border-white/10 rounded-2xl pl-14 pr-6 py-4 text-sm font-bold focus:outline-none ring-4 ring-transparent focus:ring-primary/10 transition-all shadow-xl relative z-0 text-foreground"
                             />
                         </div>
                     </div>
@@ -201,25 +200,25 @@ const UserView: React.FC<UserViewProps> = ({
                                             <Folder size={64} className="text-blue-500 group-hover:scale-110 transition-transform duration-500" fill="currentColor" fillOpacity={0.1} />
                                             <div className="absolute inset-0 blur-2xl bg-blue-500/20 rounded-full scale-50 opacity-0 group-hover:opacity-100 transition-opacity" />
                                         </div>
-                                        <span className="text-xs font-black uppercase tracking-widest truncate w-full px-2" title={folder.name}>{folder.name}</span>
+                                        <span className="text-xs font-black uppercase tracking-widest truncate w-full px-2 text-foreground" title={folder.name}>{folder.name}</span>
                                     </div>
                                 ))}
                             </div>
                         )}
 
                         {/* File Archive - Modern Table */}
-                        <div className="glass-panel rounded-[2.5rem] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.3)] border-white/5 animate-fade-in relative">
+                        <div className="glass-panel rounded-[2.5rem] overflow-hidden shadow-[0_40px_100px_rgba(0,0,0,0.3)] border-black/5 dark:border-white/5 animate-fade-in relative">
                             <div className="absolute inset-0 bg-gradient-to-b from-primary/5 via-transparent to-transparent pointer-events-none" />
-                            <div className="px-10 py-5 border-b border-white/5 bg-muted/5 flex justify-between items-center relative z-10 uppercase tracking-[0.2em] font-black text-[10px] text-muted-foreground/60">
+                            <div className="px-10 py-5 border-b border-border bg-muted/30 flex justify-between items-center relative z-10 uppercase tracking-[0.2em] font-black text-[10px] text-muted-foreground/60">
                                 <span className="flex items-center gap-2"><FileType size={12} strokeWidth={3} className="text-primary" /> SECURE STORAGE</span>
                                 <span className="px-3 py-1 bg-muted/20 rounded-lg text-primary">{visibleFiles.length} OBJECTS</span>
                             </div>
 
-                            <div className="divide-y divide-white/5 relative z-10">
+                            <div className="divide-y divide-border relative z-10">
                                 {visibleFiles.length === 0 && visibleFolders.length === 0 ? (
                                     <div className="p-32 text-center flex flex-col items-center gap-6">
-                                        <div className="p-8 rounded-full bg-muted/10 animate-pulse text-muted-foreground/20"><Search size={48} /></div>
-                                        <div className="text-muted-foreground italic font-black text-xs uppercase tracking-[0.3em] opacity-30">{t.dbEmpty}</div>
+                                        <div className="p-8 rounded-full bg-muted/50 animate-pulse text-muted-foreground/20"><Search size={48} /></div>
+                                        <div className="text-muted-foreground italic font-black text-xs uppercase tracking-[0.3em] opacity-50 relative">{t.dbEmpty}</div>
                                     </div>
                                 ) : (
                                     visibleFiles.map((doc) => {
@@ -234,7 +233,7 @@ const UserView: React.FC<UserViewProps> = ({
                                         >
                                             <div className="absolute inset-0 bg-gradient-to-r from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                                             <div className="flex items-center gap-6 flex-1 min-w-0 relative z-10">
-                                                <div className="w-14 h-14 rounded-2xl bg-card border border-white/10 flex items-center justify-center shrink-0 shadow-2xl group-hover:scale-110 group-hover:-rotate-3 transition-all duration-500">
+                                                <div className="w-14 h-14 rounded-2xl bg-card border border-border flex items-center justify-center shrink-0 shadow-sm group-hover:scale-110 group-hover:-rotate-3 transition-all duration-500">
                                                     <div className="group-hover:scale-110 transition-transform">{getFileIcon(doc)}</div>
                                                 </div>
                                                 <div className="min-w-0 space-y-1.5">
@@ -242,11 +241,11 @@ const UserView: React.FC<UserViewProps> = ({
                                                         {doc.name}
                                                         {isError && <span className="bg-red-500/10 text-red-500 text-[8px] px-1.5 py-0.5 rounded-full border border-red-500/20 font-black">FAILED</span>}
                                                     </div>
-                                                    <div className="text-[10px] text-muted-foreground flex items-center gap-3 font-black uppercase tracking-widest opacity-60">
-                                                        <span className="text-blue-500/80">{(doc.size / 1024).toFixed(0)} KB</span>
-                                                        <div className="w-1 h-1 rounded-full bg-white/20" />
+                                                    <div className="text-[10px] text-muted-foreground flex items-center gap-3 font-black uppercase tracking-widest opacity-80">
+                                                        <span className="text-blue-600 bg-blue-500/10 px-2 py-0.5 rounded-md border border-blue-500/10">{(doc.size / 1024).toFixed(0)} KB</span>
+                                                        <div className="w-1 h-1 rounded-full bg-border" />
                                                         <span>{new Date(doc.uploadDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
-                                                        {searchTerm && <span className="text-indigo-400 font-black">ARCHIVE: {folders.find(f => f.id === doc.folderId)?.name || 'Root'}</span>}
+                                                        {searchTerm && <span className="text-indigo-500 font-black">ARCHIVE: {folders.find(f => f.id === doc.folderId)?.name || 'Root'}</span>}
                                                     </div>
                                                 </div>
                                             </div>
@@ -260,7 +259,7 @@ const UserView: React.FC<UserViewProps> = ({
                                                 </button>
                                                 <button
                                                     onClick={(e) => { e.stopPropagation(); handleDownload(doc); }}
-                                                    className="p-3 rounded-2xl text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all border border-white/5 aspect-square"
+                                                    className="p-3 rounded-2xl text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all border border-black/5 dark:border-white/5 aspect-square"
                                                     title={t.download}
                                                 >
                                                     <Download size={20} />
@@ -292,27 +291,27 @@ const UserView: React.FC<UserViewProps> = ({
 
             {/* AI Chat Drawer - User High Fidelity */}
             <div
-                className={`fixed z-50 bg-card/60 backdrop-blur-3xl border-l border-white/10 shadow-[0_0_100px_rgba(0,0,0,0.5)] transform transition-all duration-500 cubic-bezier(0.4, 0, 0.2, 1) flex flex-col
+                className={`fixed z-50 bg-card/90 backdrop-blur-3xl border-l border-border shadow-[0_0_100px_rgba(0,0,0,0.5)] transform transition-all duration-500 cubic-bezier(0.4, 0, 0.2, 1) flex flex-col
           ${isChatOpen ? 'translate-x-0' : 'translate-x-full'}
           ${isChatFull ? 'inset-0 w-full' : 'inset-y-0 right-0 w-full md:w-[500px] lg:w-[35%]'}
         `}
             >
-                <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-muted/10 shrink-0">
+                <div className="h-20 border-b border-border flex items-center justify-between px-8 bg-muted/30 shrink-0">
                     <div className="flex items-center gap-4">
                         <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary shadow-inner border border-primary/10">
                             <Bot size={24} />
                         </div>
                         <div className="flex flex-col">
-                            <span className="font-black text-lg tracking-tight leading-none uppercase">{t.aiAssistant}</span>
+                            <span className="font-black text-lg tracking-tight leading-none uppercase text-foreground">{t.aiAssistant}</span>
                             <span className="text-[10px] font-black tracking-widest text-primary/80 uppercase">Cognitive Stream Active</span>
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
-                        <button onClick={() => setIsChatFull(!isChatFull)} className="p-3 hover:bg-white/5 rounded-xl text-muted-foreground hover:text-white transition-all hidden md:block">
+                        <button onClick={() => setIsChatFull(!isChatFull)} className="p-3 hover:bg-muted rounded-xl text-muted-foreground hover:text-foreground transition-all hidden md:block">
                             {isChatFull ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
                         </button>
-                        <div className="w-px h-6 bg-white/10 mx-2"></div>
-                        <button onClick={onNewChat} className="p-3 hover:bg-white/5 rounded-xl text-muted-foreground hover:text-primary transition-all" title={t.newChat}><RefreshCcw size={20} /></button>
+                        <div className="w-px h-6 bg-border mx-2"></div>
+                        <button onClick={onNewChat} className="p-3 hover:bg-muted rounded-xl text-muted-foreground hover:text-foreground transition-all" title={t.newChat}><RefreshCcw size={20} /></button>
                         <button onClick={() => setIsChatOpen(false)} className="p-3 hover:bg-red-500/10 rounded-xl text-muted-foreground hover:text-red-500 transition-all"><X size={24} /></button>
                     </div>
                 </div>
