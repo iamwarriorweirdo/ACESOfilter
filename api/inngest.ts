@@ -224,6 +224,7 @@ const processFileInBackground = inngest.createFunction(
                       method = "text-direct";
                   } else if (lowName.endsWith('.pdf')) {
                       try {
+                          // @ts-ignore
                           const pdfParseModule = await import('pdf-parse');
                           const pdf = pdfParseModule.default || pdfParseModule;
                           const data = await pdf(buffer);
