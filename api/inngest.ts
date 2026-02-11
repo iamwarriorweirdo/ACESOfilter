@@ -8,6 +8,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import * as mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
 
 // --- CONFIGURATION ---
 export const inngest = new Inngest({ id: "hr-rag-app" });
@@ -48,22 +50,43 @@ function getMimeType(fileName: string): string {
   const map: Record<string, string> = {
       pdf: 'application/pdf',
       jpg: 'image/jpeg', jpeg: 'image/jpeg',
-      png: 'image/png', webp: 'image/webp',
+      png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
       txt: 'text/plain',
       doc: 'application/msword',
       docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       xls: 'application/vnd.ms-excel',
-      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      csv: 'text/csv',
+      md: 'text/md',
+      html: 'text/html',
+      xml: 'text/xml',
+      rtf: 'text/rtf',
+      py: 'text/x-python',
+      js: 'text/javascript',
+      ts: 'text/javascript'
   };
   return map[ext || ''] || 'application/octet-stream';
+}
+
+function isGeminiFileSupported(mimeType: string): boolean {
+    // Gemini File API supports specific types. DOCX/XLSX are NOT supported directly.
+    const supported = [
+        'application/pdf',
+        'text/plain', 'text/html', 'text/css', 'text/md', 'text/csv', 'text/xml', 'text/rtf',
+        'application/x-javascript', 'text/javascript', 'application/x-python', 'text/x-python',
+        'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
+        'audio/wav', 'audio/mp3', 'audio/aiff', 'audio/aac', 'audio/ogg', 'audio/flac',
+        'video/mp4', 'video/mpeg', 'video/mov', 'video/avi', 'video/x-flv', 'video/mpg', 'video/webm', 'video/wmv', 'video/3gpp'
+    ];
+    return supported.includes(mimeType) || mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/');
 }
 
 // --- CORE FUNCTION ---
 const processFileInBackground = inngest.createFunction(
   { 
     id: "process-file-background", 
-    retries: 0, // No retry for heavy tasks to save billing/resources
-    concurrency: { limit: 1 } // Serial processing for safety
+    retries: 0, 
+    concurrency: { limit: 1 }
   },
   { event: "app/process.file" },
   async ({ event, step }) => {
@@ -90,7 +113,7 @@ const processFileInBackground = inngest.createFunction(
           try {
               const headRes = await fetch(url, { method: 'HEAD' });
               const size = Number(headRes.headers.get('content-length') || 0);
-              // Threshold 10MB: > 10MB uses "Partial Indexing" via Stream
+              // Threshold 10MB
               return { size, isLarge: size > 10 * 1024 * 1024 }; 
           } catch (e) {
               return { size: 0, isLarge: true }; // Assume large if HEAD fails
@@ -101,75 +124,101 @@ const processFileInBackground = inngest.createFunction(
       const ocrResult = await step.run("3-smart-ocr", async () => {
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
           const mimeType = getMimeType(fileName);
+          const isSupported = isGeminiFileSupported(mimeType);
 
           // === CHIẾN LƯỢC CHO FILE LỚN (>= 10MB) ===
           if (strategy.isLarge) {
-              await updateDbStatus(docId, `File lớn (${(strategy.size/1024/1024).toFixed(1)}MB). Dùng chế độ: Mục lục & Tóm tắt...`);
+              await updateDbStatus(docId, `File lớn (${(strategy.size/1024/1024).toFixed(1)}MB). Chế độ Stream...`);
               
               const tempFilePath = path.join(os.tmpdir(), `partial_${docId}_${Date.now()}.${fileName.split('.').pop()}`);
-              let googleFile: any = null;
-
+              
               try {
                   // 1. STREAM DOWNLOAD (RAM Safe)
                   const response = await fetch(url);
                   if (!response.ok || !response.body) throw new Error("Download failed");
-                  
-                  // @ts-ignore: web stream to node stream
+                  // @ts-ignore
                   const nodeStream = Readable.fromWeb(response.body);
                   await pipeline(nodeStream, fs.createWriteStream(tempFilePath));
-                  
-                  // 2. UPLOAD TO GOOGLE (Storage Safe)
-                  await updateDbStatus(docId, `Đang đẩy file sang AI Server...`);
-                  const uploadResult = await genAI.files.upload({
-                      file: tempFilePath,
-                      config: { mimeType }
-                  });
-                  googleFile = uploadResult;
 
-                  // 3. WAIT FOR PROCESSING
-                  let fileState = googleFile.state;
-                  while (fileState === "PROCESSING") {
-                      await new Promise(r => setTimeout(r, 2000));
-                      const freshFile = await genAI.files.get({ name: googleFile.name });
-                      fileState = freshFile.state;
-                  }
-                  if (fileState === "FAILED") throw new Error("Google AI failed to process file.");
+                  // IF SUPPORTED BY GEMINI (PDF, Video, etc.) -> UPLOAD
+                  if (isSupported) {
+                      let googleFile: any = null;
+                      try {
+                          await updateDbStatus(docId, `Đang đẩy file sang AI Server...`);
+                          const uploadResult = await genAI.files.upload({
+                              file: tempFilePath,
+                              config: { mimeType }
+                          });
+                          googleFile = uploadResult;
 
-                  // 4. SMART PROMPT (Partial Extraction)
-                  // Đây là phần quan trọng nhất: Yêu cầu AI chỉ đọc phần đầu và mục lục
-                  await updateDbStatus(docId, `AI đang phân tích cấu trúc & mục lục...`);
-                  const prompt = `Đây là một tài liệu rất lớn. ĐỪNG cố gắng đọc hết toàn bộ từng chữ.
-                  Nhiệm vụ của bạn là tạo một bản tóm tắt metadata chất lượng cao để làm chỉ mục tìm kiếm (Index).
-                  
-                  Hãy trích xuất các thông tin sau:
-                  1. Tiêu đề chính xác của tài liệu.
-                  2. Mục lục (Table of Contents) hoặc danh sách các đề mục chính.
-                  3. Tóm tắt nội dung của 5-10 trang đầu tiên (Introduction/Summary).
-                  4. Các từ khóa quan trọng nhất.
-                  
-                  Trả về kết quả dưới dạng văn bản có cấu trúc rõ ràng.`;
+                          // Wait for processing
+                          let fileState = googleFile.state;
+                          while (fileState === "PROCESSING") {
+                              await new Promise(r => setTimeout(r, 2000));
+                              const freshFile = await genAI.files.get({ name: googleFile.name });
+                              fileState = freshFile.state;
+                          }
+                          if (fileState === "FAILED") throw new Error("Google AI failed to process file.");
 
-                  const result = await genAI.models.generateContent({
-                      model: "gemini-3-flash-preview",
-                      contents: {
-                          parts: [
-                              { fileData: { fileUri: googleFile.uri, mimeType } },
-                              { text: prompt }
-                          ]
+                          await updateDbStatus(docId, `AI đang phân tích cấu trúc...`);
+                          const prompt = `Đây là một tài liệu lớn. ĐỪNG cố gắng đọc hết toàn bộ từng chữ.
+                          Nhiệm vụ của bạn là tạo một bản tóm tắt metadata chất lượng cao để làm chỉ mục tìm kiếm (Index).
+                          Trích xuất: 1. Tiêu đề. 2. Mục lục (TOC). 3. Tóm tắt trang đầu. 4. Từ khóa.`;
+
+                          const result = await genAI.models.generateContent({
+                              model: "gemini-3-flash-preview",
+                              contents: {
+                                  parts: [
+                                      { fileData: { fileUri: googleFile.uri, mimeType } },
+                                      { text: prompt }
+                                  ]
+                              }
+                          });
+
+                          return { 
+                              text: result.text || "", 
+                              method: "gemini-file-api-large",
+                              isPartial: true
+                          };
+                      } finally {
+                          try { if (googleFile) await genAI.files.delete({ name: googleFile.name }); } catch (e) {}
                       }
-                  });
+                  } 
+                  
+                  // IF NOT SUPPORTED (DOCX, XLSX) -> LOCAL EXTRACT FROM TEMP FILE
+                  else {
+                      await updateDbStatus(docId, `File ${mimeType} không hỗ trợ upload AI. Xử lý cục bộ...`);
+                      let text = "";
+                      
+                      try {
+                          if (mimeType.includes('wordprocessingml') || fileName.endsWith('.docx')) {
+                               const result = await mammoth.extractRawText({ path: tempFilePath });
+                               text = result.value;
+                          } else if (mimeType.includes('spreadsheet') || fileName.endsWith('.xlsx')) {
+                               const workbook = XLSX.readFile(tempFilePath);
+                               const sheetName = workbook.SheetNames[0];
+                               text = XLSX.utils.sheet_to_txt(workbook.Sheets[sheetName]);
+                          } else {
+                               // Try fallback text reading
+                               text = fs.readFileSync(tempFilePath, 'utf-8');
+                          }
+                      } catch(e: any) {
+                          throw new Error(`Local extraction failed for ${fileName}: ${e.message}`);
+                      }
 
-                  return { 
-                      text: result.text || "", 
-                      method: "gemini-partial-large-file",
-                      isPartial: true
-                  };
+                      // Truncate to safe limit for "Partial Indexing" (e.g., 50k chars)
+                      const safeText = (text || "").substring(0, 50000);
+                      return {
+                          text: `[PARTIAL LOCAL EXTRACT]\n${safeText}`,
+                          method: "local-disk-extract",
+                          isPartial: true
+                      };
+                  }
 
               } catch (e: any) {
                   throw new Error(`Large File Error: ${e.message}`);
               } finally {
                   try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) {}
-                  try { if (googleFile) await genAI.files.delete({ name: googleFile.name }); } catch (e) {}
               }
           } 
           
@@ -185,9 +234,8 @@ const processFileInBackground = inngest.createFunction(
               let method = "unknown";
               const lowName = fileName.toLowerCase();
 
-              // Thử parse bằng thư viện nhẹ trước để tiết kiệm
               try {
-                  if (lowName.endsWith('.txt')) {
+                  if (lowName.endsWith('.txt') || lowName.endsWith('.md') || lowName.endsWith('.csv')) {
                       text = buffer.toString('utf-8');
                       method = "text-direct";
                   } else if (lowName.endsWith('.pdf')) {
@@ -199,11 +247,21 @@ const processFileInBackground = inngest.createFunction(
                           text = data.text;
                           method = "pdf-parse-local";
                       } catch (e) {}
+                  } else if (lowName.endsWith('.docx')) {
+                      const result = await mammoth.extractRawText({ buffer: buffer });
+                      text = result.value;
+                      method = "mammoth-docx-buffer";
+                  } else if (lowName.endsWith('.xlsx') || lowName.endsWith('.xls')) {
+                      const workbook = XLSX.read(buffer, { type: 'buffer' });
+                      const sheetName = workbook.SheetNames[0];
+                      text = XLSX.utils.sheet_to_txt(workbook.Sheets[sheetName]);
+                      method = "xlsx-buffer";
                   }
-              } catch (e) {}
+              } catch (e) { console.warn("Local parse error, falling back to Vision:", e); }
 
-              // Nếu thất bại hoặc ít chữ quá -> Dùng Vision AI
-              if ((!text || text.length < 50)) {
+              // Fallback to Vision AI only if text is empty AND it's a supported vision format
+              // Note: Gemini Vision does NOT support DOCX/XLSX.
+              if ((!text || text.length < 50) && isSupported) {
                    await updateDbStatus(docId, `Dùng AI Vision đọc chi tiết...`);
                    const res = await genAI.models.generateContent({
                         model: "gemini-3-flash-preview",
@@ -230,7 +288,6 @@ const processFileInBackground = inngest.createFunction(
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
           
           try {
-              // Nếu là file partial, text đã là tóm tắt rồi, nên context lấy ít hơn
               const context = ocrResult.text.substring(0, 10000);
               const prompt = `Phân tích văn bản sau và trả về JSON thuần: { "title": "Tiêu đề ngắn", "summary": "Tóm tắt 2 dòng", "language": "vi/en", "key_information": ["gạch đầu dòng 1", "gạch đầu dòng 2"] }. Văn bản: ${context}`;
               
@@ -255,7 +312,7 @@ const processFileInBackground = inngest.createFunction(
               ...metaResult,
               full_text_content: ocrResult.text, 
               parse_method: ocrResult.method,
-              is_partial_index: ocrResult.isPartial // Flag để Frontend hiển thị cảnh báo nếu cần
+              is_partial_index: ocrResult.isPartial 
           };
           
           await sql`UPDATE documents SET extracted_content = ${JSON.stringify(finalContent)}, status = ${ocrResult.isPartial ? 'indexed_partial' : 'indexed'} WHERE id = ${docId}`;
@@ -267,7 +324,6 @@ const processFileInBackground = inngest.createFunction(
           await updateDbStatus(docId, `Đang tạo Vector (Search Index)...`);
           
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
-          // Với partial index, nội dung text chính là summary/TOC nên rất tốt cho semantic search
           const vector = await getEmbeddingWithFallback(genAI, ocrResult.text.substring(0, 8000));
           
           if (vector.length > 0 && process.env.PINECONE_API_KEY) {
