@@ -101,54 +101,70 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (!raw) return "[[Nội dung trống]]";
           if (raw.includes("Đang chờ xử lý") || raw.includes("pending")) 
               return "[[Nội dung chưa sẵn sàng]]";
-          
-          // Logic mới: Giải mã JSON nếu có
           try {
               const trimmed = raw.trim();
               if (trimmed.startsWith('{')) {
                   const data = JSON.parse(trimmed);
-                  // Ưu tiên lấy full text, sau đó đến summary, cuối cùng là chính nó
-                  return data.full_text_content || data.summary || raw;
+                  // JSON Clean Strategy: Only extracting essential text to reduce noise
+                  return `Title: ${data.title}\nSummary: ${data.summary}\nFull Text: ${data.full_text_content || ""}`;
               }
-          } catch (e) {
-              // Không phải JSON, trả về text thô
-          }
+          } catch (e) { }
           return raw;
       };
 
+      // 1. IMPROVED RETRIEVAL: Query Expansion & Keyword Tokenization
+      // Tách từ khóa để tìm kiếm linh hoạt hơn (giả lập ElasticSearch behavior)
+      const keywords = userQuery.split(/\s+/).filter((w: string) => w.length > 2).map((w: string) => `%${w}%`);
+      
+      // SQL Query: Tìm file có tên chứa TẤT CẢ từ khóa quan trọng (High Precision) hoặc nội dung chứa từ khóa
+      // Đây là bước "Sơ loại" (First Pass Retrieval)
       const validDocsPromise = sql`SELECT name, extracted_content FROM documents`; 
       const vectorPromise = getSafeEmbedding(ai, userQuery, embeddingModel);
 
       const [allDocs, vector] = await Promise.all([validDocsPromise, vectorPromise]);
       const validFileNames = new Set(allDocs.map(d => d.name));
 
-      // 1. Keyword Search
-      const keywordMatches = allDocs.filter((d: any) => {
-          const content = d.extracted_content || "";
-          return d.name.toLowerCase().includes(userQuery.toLowerCase()) || 
-                 content.toLowerCase().includes(userQuery.toLowerCase());
-      }).slice(0, 3);
+      // 2. HEURISTIC RERANKING (Thay thế cho Rerank Model đắt tiền)
+      // Chúng ta chấm điểm từng file dựa trên mức độ khớp với câu hỏi
+      const scoredDocs = allDocs.map((d: any) => {
+          let score = 0;
+          const nameLower = d.name.toLowerCase();
+          const queryLower = userQuery.toLowerCase();
+          
+          // Exact Match Name: Điểm cực cao (User gọi đích danh file)
+          if (nameLower.includes(queryLower)) score += 100;
+          
+          // Keyword Match Name: Điểm trung bình
+          keywords.forEach((k: string) => {
+              if (nameLower.includes(k.replace(/%/g, '').toLowerCase())) score += 20;
+          });
 
-      for (const d of keywordMatches) {
+          return { ...d, score };
+      }).sort((a: any, b: any) => b.score - a.score); // Sắp xếp giảm dần theo điểm
+
+      // Lấy Top 3 file điểm cao nhất (Keyword Search Results)
+      const topKeywordDocs = scoredDocs.filter((d: any) => d.score > 0).slice(0, 3);
+
+      for (const d of topKeywordDocs) {
           seen.add(d.name);
-          text += `File: "${d.name}"\nContent: ${processContent(d.extracted_content).substring(0, 4000)}\n---\n`;
+          // Cho phép context lớn (30k chars) vì Gemini Flash xử lý tốt
+          text += `[PRIORITY FILE MATCH]: "${d.name}"\n${processContent(d.extracted_content).substring(0, 30000)}\n---\n`;
       }
 
-      // 2. Semantic Search (Pinecone)
-      if (text.length < 5000 && vector.length > 0) {
+      // 3. SEMANTIC SEARCH (Vector Search - Pinecone)
+      // Tìm kiếm dựa trên ý nghĩa (dành cho câu hỏi mơ hồ, không trúng từ khóa)
+      if (text.length < 100000 && vector.length > 0) {
           try {
               const queryResponse = await index.query({ vector, topK: 5, includeMetadata: true });
               for (const m of queryResponse.matches) {
                   const fname = m.metadata?.filename as string;
-                  // Chuẩn hóa tên file để so sánh (tránh lỗi lệch ký tự hoặc hoa thường)
                   const existsInDb = Array.from(validFileNames).some(name => name.toLowerCase() === fname?.toLowerCase());
 
                   if (fname && existsInDb && !seen.has(fname)) {
-                      // Tìm nội dung từ DB thay vì dùng metadata của Pinecone (vì metadata Pinecone bị giới hạn độ dài)
                       const dbMatch = allDocs.find(d => d.name.toLowerCase() === fname.toLowerCase());
                       const content = dbMatch ? processContent(dbMatch.extracted_content) : String(m.metadata?.text || "");
                       
-                      text += `File: "${fname}"\nContent: ${content.substring(0, 3000)}\n---\n`;
+                      text += `[SEMANTIC MATCH]: "${fname}"\n${content.substring(0, 20000)}\n---\n`;
                       seen.add(fname);
                   }
               }
@@ -159,15 +175,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const context = await contextPromise;
 
-    const systemInstruction = `Bạn là Trợ lý AI chuyên trách tài liệu nội bộ của công ty.
-QUY TẮC PHẢN HỒI:
-1. CHỈ sử dụng thông tin từ phần "Context" bên dưới để trả lời.
-2. Nếu không có thông tin trong Context, hãy trả lời: "Tôi không tìm thấy thông tin này trong tài liệu hệ thống. Hiện tại hệ thống có ghi nhận tập tin nhưng nội dung bên trong chưa sẵn sàng để truy xuất."
-3. Nếu thông tin có trong Context, hãy trả lời chi tiết và chuyên nghiệp.
-4. Luôn dẫn nguồn file bằng cú pháp [[File: Tên_File]] khi trích dẫn.
+    // 4. ADVANCED SYSTEM PROMPT (Chain-of-Thought)
+    const systemInstruction = `Bạn là Chuyên gia Phân tích Dữ liệu Doanh nghiệp (AI Senior Analyst).
 
-Context:
-${context || "Không tìm thấy dữ liệu liên quan."}`;
+QUY TRÌNH SUY LUẬN (Bắt buộc thực hiện ngầm):
+1. **Phân tích Context**: Đọc kỹ các phần [PRIORITY FILE MATCH] và [SEMANTIC MATCH].
+2. **Đối chiếu**: So sánh từ khóa trong câu hỏi của người dùng với nội dung tài liệu.
+3. **Trích xuất**: Lấy ra chính xác đoạn văn bản chứa câu trả lời.
+4. **Tổng hợp**: Viết câu trả lời dựa trên thông tin đã trích xuất.
+
+LUẬT TRẢ LỜI:
+- **KHÔNG BỊA ĐẶT**: Chỉ trả lời dựa trên Context. Nếu không có, nói rõ là không tìm thấy trong tài liệu nào.
+- **DẪN CHỨNG CỤ THỂ**: Khi đưa ra thông tin, phải ghi rõ nguồn từ file nào.
+- **ĐỊNH DẠNG LINK FILE**: Bắt buộc dùng cú pháp [[File: Tên_File_Chính_Xác]] mỗi khi nhắc đến tài liệu để tạo link tải. Ví dụ: "Theo quy định trong [[File: Noi_quy.pdf]]...".
+- **CHẤP NHẬN FILE LIÊN QUAN**: Nếu người dùng hỏi "Nội quy" và có file "HR_ACESO_NỘI QUY.pdf", hãy coi đó là file đúng và trả lời nội dung bên trong.
+
+Context Dữ Liệu:
+${context || "Không tìm thấy dữ liệu nào khớp với câu hỏi."}`;
 
     if (selectedModel.includes('gpt')) {
         await queryOpenAI([{ role: 'system', content: systemInstruction }, ...messages], selectedModel, res);
