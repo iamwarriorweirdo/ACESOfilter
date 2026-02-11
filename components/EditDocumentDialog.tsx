@@ -51,7 +51,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
         } catch (error) { console.error(error); }
     };
 
-    // CHIẾN LƯỢC: Polling nội dung nếu tệp đang trong quá trình OCR (Inngest)
+    // Polling logic for background indexing
     useEffect(() => {
         let interval: any;
         let pollCount = 0;
@@ -209,21 +209,21 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 <div className="flex-1 overflow-hidden relative bg-[#0f0f11] flex flex-col">
                     {activeTab === 'preview' ? (
                         <div className="flex-1 flex flex-col overflow-hidden">
-                            {/* Thanh Tiêu đề Đầy đủ & Nút Tải xuống */}
-                            <div className="px-8 py-6 border-b border-white/5 bg-white/5 shrink-0">
-                                <h2 className="text-xl md:text-2xl font-black text-foreground mb-4 leading-tight">{document.name}</h2>
+                            {/* Thanh Tiêu đề cực kỳ nhỏ gọn & Nút Tải xuống */}
+                            <div className="px-6 py-2.5 border-b border-white/5 bg-white/5 shrink-0 flex flex-col">
+                                <h2 className="text-sm font-bold text-foreground truncate">{document.name}</h2>
                                 <button 
                                     onClick={handleDownload}
-                                    className="flex items-center gap-2 px-6 py-2.5 bg-primary/20 hover:bg-primary text-primary hover:text-white border border-primary/30 rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-lg active:scale-95"
+                                    className="flex items-center gap-1.5 mt-1 text-[10px] font-black uppercase text-primary hover:text-white transition-colors w-fit"
                                 >
-                                    <Download size={16} /> Tải xuống tài liệu
+                                    <Download size={12} /> Tải xuống bản gốc
                                 </button>
                             </div>
                             
-                            {/* Vùng hiển thị nội dung tệp */}
+                            {/* Vùng hiển thị nội dung tệp chiếm không gian tối đa */}
                             <div className={`flex-1 overflow-y-auto ${viewMode === 'native' ? 'bg-white' : ''}`}>
-                                {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0 min-h-[500px]" />}
-                                {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0 min-h-[500px]" />}
+                                {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0" />}
+                                {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0" />}
                                 {viewMode === 'native' && (
                                     <div className="p-8 w-full max-w-4xl mx-auto bg-white text-black min-h-full prose dark:prose-invert" dangerouslySetInnerHTML={{ __html: previewHtml || '' }} />
                                 )}
