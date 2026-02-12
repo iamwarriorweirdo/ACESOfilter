@@ -189,6 +189,49 @@ async function handleFolders(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: "Action not supported" });
 }
 
+async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+    
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+        return res.status(500).json({ error: "Supabase chưa được cấu hình (Missing URL/Key). Vui lòng thêm biến môi trường SUPABASE_URL và SUPABASE_KEY." });
+    }
+
+    try {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        let body = req.body || {};
+        if (typeof body === 'string') { try { body = JSON.parse(body); } catch(e){} }
+        
+        const filename = body.filename || `file_${Date.now()}`;
+        const cleanName = filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+        const path = `${Date.now()}_${cleanName}`;
+
+        // Create signed upload URL (requires 'documents' bucket to exist)
+        const { data, error } = await supabase.storage
+            .from('documents')
+            .createSignedUploadUrl(path);
+
+        if (error) {
+             console.error("Supabase Storage Error:", error);
+             return res.status(500).json({ error: `Supabase Error: ${error.message}` });
+        }
+
+        // Get public URL
+        const { data: publicData } = supabase.storage
+            .from('documents')
+            .getPublicUrl(path);
+
+        return res.status(200).json({
+            uploadUrl: data?.signedUrl,
+            publicUrl: publicData.publicUrl
+        });
+    } catch (e: any) {
+        return res.status(500).json({ error: e.message });
+    }
+}
+
 async function handleProxy(req: VercelRequest, res: VercelResponse) {
     let { url, contentType: forcedType } = req.query; 
     if (Array.isArray(url)) url = url[0]; 
@@ -211,6 +254,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (action === 'users') return await handleUsers(req, res);
         if (action === 'files') return await handleFiles(req, res);
         if (action === 'folders') return await handleFolders(req, res);
+        if (action === 'upload-supabase') return await handleUploadSupabase(req, res);
         if (action === 'sync') {
             await inngest.send({ name: "app/sync.database", data: { timestamp: Date.now() } });
             return res.status(200).json({ success: true });
