@@ -17,21 +17,28 @@ async function getSql() {
     return neon(connectionString);
 }
 
-function getSupabaseEnv(suffix: string, isUrl = false): string | undefined {
-    const exact = process.env[suffix]?.trim();
-    if (exact) return exact;
-    const upper = suffix.toUpperCase();
-    for (const [k, v] of Object.entries(process.env)) {
-        if (!v || typeof v !== 'string') continue;
-        const val = v.trim();
-        if (!val) continue;
-        const ku = k.toUpperCase();
-        if (ku === upper || ku.endsWith('_' + upper) || ku.includes(upper)) {
-            if (isUrl && !val.startsWith('http')) continue;
-            return val;
+function getCloudinaryConfig() {
+    // Ưu tiên biến môi trường riêng lẻ
+    if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+        return {
+            cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+            apiKey: process.env.CLOUDINARY_API_KEY,
+            apiSecret: process.env.CLOUDINARY_API_SECRET
+        };
+    }
+    // Fallback: Parse từ CLOUDINARY_URL
+    const url = process.env.CLOUDINARY_URL;
+    if (url && url.startsWith('cloudinary://')) {
+        try {
+            const [creds, cloud] = url.replace('cloudinary://', '').split('@');
+            const [key, secret] = creds.split(':');
+            return { cloudName: cloud, apiKey: key, apiSecret: secret };
+        } catch (e) { 
+            console.error("Error parsing CLOUDINARY_URL", e);
+            return {}; 
         }
     }
-    return undefined;
+    return {};
 }
 
 // --- HANDLERS ---
@@ -39,7 +46,6 @@ function getSupabaseEnv(suffix: string, isUrl = false): string | undefined {
 async function handleBackup(req: VercelRequest, res: VercelResponse) {
     const sql = await getSql();
     try {
-        // More resilient table checks
         const users = await sql`SELECT * FROM users`.catch(() => []);
         const documents = await sql`SELECT * FROM documents`.catch(() => []);
         const folders = await sql`SELECT * FROM app_folders`.catch(() => []);
@@ -158,9 +164,55 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
         if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { } }
         const docId = body.id;
         const rows = await sql`SELECT id, url, content FROM documents WHERE id = ${docId}`;
+        
         if (rows.length > 0) {
-            await inngest.send({ name: "app/delete.file", data: { docId: rows[0].id, url: rows[0].url || rows[0].content } });
+            const row = rows[0];
+            const fileUrl = row.url || row.content;
+
+            // Trigger Pinecone cleanup
+            await inngest.send({ name: "app/delete.file", data: { docId: row.id, url: fileUrl } });
+
+            // --- DELETE ACTUAL FILE FROM STORAGE ---
+            try {
+                // 1. Delete from Cloudinary
+                if (fileUrl && fileUrl.includes('cloudinary.com')) {
+                    const { cloudName, apiKey, apiSecret } = getCloudinaryConfig();
+                    if (cloudName && apiKey && apiSecret) {
+                         cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
+                         // Extract public_id: .../upload/(v1234/)?(folder/id).ext
+                         const regex = /\/upload\/(?:v\d+\/)?(.+)\.[a-zA-Z0-9]+$/;
+                         const match = fileUrl.match(regex);
+                         if (match && match[1]) {
+                             const publicId = match[1];
+                             await cloudinary.uploader.destroy(publicId);
+                             console.log(`Deleted Cloudinary asset: ${publicId}`);
+                         }
+                    } else {
+                        console.warn("Skip Cloudinary delete: credentials missing");
+                    }
+                } 
+                // 2. Delete from Supabase
+                else if (fileUrl && fileUrl.includes('supabase.co')) {
+                     // .../storage/v1/object/public/documents/path/to/file
+                     const parts = fileUrl.split('/object/public/documents/');
+                     if (parts.length > 1) {
+                         const path = decodeURIComponent(parts[1]);
+                         const sbUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+                         const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+                         if (sbUrl && sbKey) {
+                             const supabase = createClient(sbUrl, sbKey);
+                             const { error } = await supabase.storage.from('documents').remove([path]);
+                             if (error) console.error("Supabase delete failed:", error);
+                             else console.log(`Deleted Supabase asset: ${path}`);
+                         }
+                     }
+                }
+            } catch (storageError) {
+                console.error("Storage deletion error:", storageError);
+                // Continue to delete from DB even if storage delete fails
+            }
         }
+
         await sql`DELETE FROM documents WHERE id = ${docId}`;
         return res.status(200).json({ success: true });
     }
@@ -208,7 +260,6 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
         const cleanName = filename.replace(/[^a-zA-Z0-9.\-_]/g, '_');
         const path = `${Date.now()}_${cleanName}`;
 
-        // Create signed upload URL (requires 'documents' bucket to exist)
         const { data, error } = await supabase.storage
             .from('documents')
             .createSignedUploadUrl(path);
@@ -218,7 +269,6 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
              return res.status(500).json({ error: `Supabase Error: ${error.message}` });
         }
 
-        // Get public URL
         const { data: publicData } = supabase.storage
             .from('documents')
             .getPublicUrl(path);
@@ -271,9 +321,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         
         // Cloudinary helper
         if (action === 'sign-cloudinary') {
+            const { cloudName, apiKey, apiSecret } = getCloudinaryConfig();
+            
+            if (!cloudName || !apiKey || !apiSecret) {
+                // Return explicit error so frontend can fallback to Supabase if needed
+                return res.status(500).json({ error: "Cloudinary configuration missing", fallback: true });
+            }
+
+            cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret });
             const timestamp = Math.round(new Date().getTime() / 1000);
-            const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, process.env.CLOUDINARY_API_SECRET!);
-            return res.status(200).json({ signature, apiKey: process.env.CLOUDINARY_API_KEY, cloudName: process.env.CLOUDINARY_CLOUD_NAME, timestamp, folder: 'ACESOfilter' });
+            const signature = cloudinary.utils.api_sign_request({ folder: 'ACESOfilter', timestamp }, apiSecret);
+            return res.status(200).json({ signature, apiKey, cloudName, timestamp, folder: 'ACESOfilter' });
         }
 
         if (action === 'trigger-ingest') {

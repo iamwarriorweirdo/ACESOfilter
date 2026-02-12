@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Document, Language } from '../types';
 import { TRANSLATIONS } from '../constants';
-import { X, FileText, Loader2, Download, Terminal, Activity, CheckCircle } from 'lucide-react';
+import { X, FileText, Loader2, Download, Terminal, Activity, CheckCircle, Image as ImageIcon } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
 
@@ -21,7 +21,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     language
 }) => {
     const [activeTab, setActiveTab] = useState<'preview' | 'extracted'>('preview');
-    const [viewMode, setViewMode] = useState<'google' | 'native' | 'proxy'>('google');
+    const [viewMode, setViewMode] = useState<'google' | 'native' | 'proxy' | 'image'>('google');
     const [previewHtml, setPreviewHtml] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -101,10 +101,14 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             }
 
             const name = document.name.toLowerCase();
+            const type = document.type.toLowerCase();
             const isWord = name.endsWith('.docx') || name.endsWith('.doc');
             const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls');
+            const isImage = type.includes('image') || name.endsWith('.jpg') || name.endsWith('.png') || name.endsWith('.jpeg') || name.endsWith('.webp');
             
-            if (document.type.includes('pdf')) {
+            if (isImage) {
+                setViewMode('image');
+            } else if (document.type.includes('pdf')) {
                 setViewMode('proxy');
             } else if (isWord || isExcel) {
                 setViewMode('native');
@@ -225,7 +229,16 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                 <div className="flex-1 overflow-hidden relative bg-background flex flex-col">
                     {activeTab === 'preview' ? (
                         <div className="flex-1 flex flex-col overflow-hidden">
-                            <div className={`flex-1 overflow-y-auto ${viewMode === 'native' ? 'bg-white' : 'bg-zinc-100 dark:bg-zinc-900'}`}>
+                            <div className={`flex-1 overflow-y-auto ${viewMode === 'native' || viewMode === 'image' ? 'bg-white' : 'bg-zinc-100 dark:bg-zinc-900'}`}>
+                                {viewMode === 'image' && (
+                                    <div className="w-full h-full flex items-center justify-center bg-zinc-900 p-4">
+                                        <img 
+                                            src={document.content} 
+                                            alt="Document Preview" 
+                                            className="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+                                        />
+                                    </div>
+                                )}
                                 {viewMode === 'proxy' && <iframe src={getProxyUrl(document.content, document.type)} className="w-full h-full border-0" />}
                                 {viewMode === 'google' && <iframe src={`https://docs.google.com/gview?url=${encodeURIComponent(document.content)}&embedded=true`} className="w-full h-full border-0" />}
                                 {viewMode === 'native' && (

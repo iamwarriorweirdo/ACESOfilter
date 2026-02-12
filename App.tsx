@@ -5,6 +5,7 @@ import UserView from './components/UserView';
 import { TRANSLATIONS } from './constants';
 import EditDocumentDialog from './components/EditDocumentDialog';
 import { Eye, EyeOff, LogIn, Globe, Moon, Sun, Lock, User as UserIcon } from 'lucide-react';
+import { compressImage } from './utils/imageCompression';
 
 const safeFetchJson = async (url: string, options?: RequestInit) => {
     try {
@@ -253,16 +254,27 @@ const App: React.FC = () => {
         setIsUploading(true);
         setShowUploadResultModal(false);
         const results: { fileName: string; success: boolean; error?: string }[] = new Array(files.length);
+        
         const processOne = async (file: File, index: number) => {
             try {
-                const url = await uploadFileHybrid(file);
+                // OPTIMIZATION: Nén ảnh trước khi upload
+                let fileToUpload = file;
+                if (file.type.startsWith('image/')) {
+                    try {
+                        fileToUpload = await compressImage(file);
+                    } catch (compressionErr) {
+                        console.warn("Lỗi nén ảnh, sẽ dùng ảnh gốc:", compressionErr);
+                    }
+                }
+
+                const url = await uploadFileHybrid(fileToUpload);
                 const docId = Math.random().toString(36).substr(2, 9);
                 const newDoc = {
                     id: docId,
-                    name: file.name,
-                    type: file.type || 'application/octet-stream',
+                    name: fileToUpload.name, // Use new name (might change extension to .jpg)
+                    type: fileToUpload.type || 'application/octet-stream',
                     content: url,
-                    size: file.size,
+                    size: fileToUpload.size,
                     uploadDate: Date.now(),
                     folderId,
                     uploadedBy: user?.username || 'system',
@@ -276,7 +288,7 @@ const App: React.FC = () => {
                 await fetch('/api/app?handler=trigger-ingest', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, fileName: file.name, fileType: file.type, docId })
+                    body: JSON.stringify({ url, fileName: fileToUpload.name, fileType: fileToUpload.type, docId })
                 });
                 fetchDocs();
                 results[index] = { fileName: file.name, success: true };
