@@ -187,8 +187,6 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                              await cloudinary.uploader.destroy(publicId);
                              console.log(`Deleted Cloudinary asset: ${publicId}`);
                          }
-                    } else {
-                        console.warn("Skip Cloudinary delete: credentials missing");
                     }
                 } 
                 // 2. Delete from Supabase
@@ -202,7 +200,7 @@ async function handleFiles(req: VercelRequest, res: VercelResponse) {
                          if (sbUrl && sbKey) {
                              const supabase = createClient(sbUrl, sbKey);
                              const { error } = await supabase.storage.from('documents').remove([path]);
-                             if (error) console.error("Supabase delete failed:", error);
+                             if (error) console.error("Supabase delete error:", error.message);
                              else console.log(`Deleted Supabase asset: ${path}`);
                          }
                      }
@@ -248,7 +246,7 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
     if (!supabaseUrl || !supabaseKey) {
-        return res.status(500).json({ error: "Supabase chưa được cấu hình (Missing URL/Key). Vui lòng thêm biến môi trường SUPABASE_URL và SUPABASE_KEY." });
+        return res.status(500).json({ error: "Supabase chưa được cấu hình. Vui lòng kiểm tra biến môi trường SUPABASE_URL và SUPABASE_SERVICE_ROLE_KEY." });
     }
 
     try {
@@ -266,6 +264,13 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
 
         if (error) {
              console.error("Supabase Storage Error:", error);
+             // Detect specific DNS/Network errors (ENOTFOUND, fetch failed)
+             const msg = error.message || "";
+             if (msg.includes("fetch failed") || msg.includes("ENOTFOUND")) {
+                 return res.status(502).json({ 
+                     error: `Lỗi kết nối Supabase (${supabaseUrl}). Địa chỉ không tồn tại hoặc đã bị xóa. Vui lòng kiểm tra lại biến môi trường.` 
+                 });
+             }
              return res.status(500).json({ error: `Supabase Error: ${error.message}` });
         }
 
@@ -278,6 +283,10 @@ async function handleUploadSupabase(req: VercelRequest, res: VercelResponse) {
             publicUrl: publicData.publicUrl
         });
     } catch (e: any) {
+        console.error("Supabase Exception:", e);
+        if (e.message && (e.message.includes("ENOTFOUND") || e.message.includes("fetch failed"))) {
+             return res.status(502).json({ error: "Lỗi DNS: Không tìm thấy Server Supabase. Hãy kiểm tra SUPABASE_URL." });
+        }
         return res.status(500).json({ error: e.message });
     }
 }
