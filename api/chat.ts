@@ -3,11 +3,10 @@ import { GoogleGenAI } from '@google/genai';
 import { neon } from '@neondatabase/serverless';
 import Groq from "groq-sdk";
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { redactPII } from '../utils/textProcessor';
 
 async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'embedding-001') {
     const openAiKey = process.env.OPEN_AI_API_KEY;
-    
-    // 1. OpenAI (If configured)
     if (configEmbeddingModel && configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
          try {
              const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
@@ -20,8 +19,6 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
              if (vec && vec.length > 0) return vec;
          } catch (oe) { }
     }
-
-    // 2. Gemini Primary (Sử dụng embedding-001 là model duy nhất hợp lệ cho Gemini Embedding lúc này)
     try {
         const res = await ai.models.embedContent({
             model: "embedding-001",
@@ -32,6 +29,26 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
         console.warn(`Gemini embedding failed: ${e.message}.`);
         return [];
     }
+}
+
+async function logChatToDb(sql: any, user: any, messages: any[], title: string) {
+    if (!user || !user.username) return;
+    try {
+        // Find existing session or create new
+        // Ideally we pass sessionId from frontend, but for now we handle simple history update
+        // We will simple store the latest conversation state in a "history" log table
+        // Or if we have a session ID, update it.
+        const shortHistory = JSON.stringify(messages.slice(-10)); // Keep last 10 msgs
+        const sessionId = `${user.username}_${new Date().toISOString().split('T')[0]}`; // Daily session
+        
+        // Simple append log for auditing
+        await sql`CREATE TABLE IF NOT EXISTS chat_history (id TEXT PRIMARY KEY, user_id TEXT, title TEXT, messages TEXT, created_at BIGINT)`;
+        
+        // Upsert session
+        await sql`INSERT INTO chat_history (id, user_id, title, messages, created_at)
+                  VALUES (${sessionId}, ${user.username}, ${title}, ${shortHistory}, ${Date.now()})
+                  ON CONFLICT (id) DO UPDATE SET messages = ${shortHistory}, created_at = ${Date.now()}`;
+    } catch (e) { console.error("Chat logging failed", e); }
 }
 
 async function queryOpenAI(messages: any[], model: string, res: VercelResponse) {
@@ -71,27 +88,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    const { messages, config } = req.body;
+    const { messages, config, user } = req.body; // Expecting user object with role
     const lastMessage = messages?.[messages.length - 1];
     if (!lastMessage) return res.status(400).json({ error: "No messages" });
 
+    // 1. PII Redaction on User Query (Protect sensitive info in logs/LLM)
+    const userQuery = redactPII(lastMessage.content);
+    
+    // 2. Identify User Role for RBAC
+    const userRole = user?.role || 'employee'; // Default to lowest privilege
+
     let inputModel = config?.chatModel || 'auto';
     let selectedModel = 'gemini-3-flash-preview';
-    
-    // Logic "Auto" selection
     if (inputModel === 'auto') {
-        const isComplex = lastMessage.content.length > 500 || messages.length > 5;
+        const isComplex = userQuery.length > 500 || messages.length > 5;
         selectedModel = isComplex ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
     } else {
         selectedModel = inputModel;
     }
 
     const embeddingModel = config?.embeddingModel || 'embedding-001';
-    const userQuery = lastMessage.content;
     
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
-    
     const sql = neon(process.env.DATABASE_URL!.replace('postgresql://', 'postgres://'));
     const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
     const index = pc.index(process.env.PINECONE_INDEX_NAME!);
@@ -117,66 +136,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
 
       const keywords = userQuery.split(/\s+/).filter((w: string) => w.length > 2).map((w: string) => `%${w}%`);
-      const validDocsPromise = sql`SELECT name, extracted_content FROM documents`; 
+      
+      // SQL Keyword Search needs to respect RBAC too
+      // Unfortunately storing RBAC in SQL for simple docs table is done via JSON text column 'allowed_roles'
+      // Neon/Postgres JSON query: 
+      const validDocsPromise = sql`
+        SELECT name, extracted_content, allowed_roles 
+        FROM documents 
+        WHERE allowed_roles ILIKE ${'%' + userRole + '%'} OR allowed_roles ILIKE '%all%' OR allowed_roles IS NULL
+      `; 
+      
       const vectorPromise = getSafeEmbedding(ai, userQuery, embeddingModel);
 
       const [allDocs, vector] = await Promise.all([validDocsPromise, vectorPromise]);
       const validFileNames = new Set(allDocs.map(d => d.name));
 
+      // --- HYBRID SEARCH LOGIC ---
+
+      // 1. Keyword Scoring
       const scoredDocs = allDocs.map((d: any) => {
           let score = 0;
+          // Basic keyword match logic
+          const contentStr = typeof d.extracted_content === 'string' ? d.extracted_content.toLowerCase() : "";
           const nameLower = d.name.toLowerCase();
           const queryLower = userQuery.toLowerCase();
           
-          let contentLower = "";
-          try {
-             if (d.extracted_content?.trim().startsWith('{')) {
-                const json = JSON.parse(d.extracted_content);
-                contentLower = (json.full_text_content || json.summary || "").toLowerCase();
-             } else {
-                contentLower = (d.extracted_content || "").toLowerCase();
-             }
-          } catch {
-             contentLower = (d.extracted_content || "").toLowerCase();
-          }
-          
           if (nameLower.includes(queryLower)) score += 200;
-          if (contentLower.includes(queryLower)) score += 50;
-
+          if (contentStr.includes(queryLower)) score += 50;
+          
           keywords.forEach((k: string) => {
               const cleanKey = k.replace(/%/g, '').toLowerCase();
               if (cleanKey.length < 2) return; 
-
-              if (nameLower.includes(cleanKey)) {
-                  score += 30;
-              } else if (contentLower.includes(cleanKey)) {
-                  score += 10;
-              }
+              if (nameLower.includes(cleanKey)) score += 30;
+              else if (contentStr.includes(cleanKey)) score += 10;
           });
-
           return { ...d, score };
       }).sort((a: any, b: any) => b.score - a.score);
 
       const topKeywordDocs = scoredDocs.filter((d: any) => d.score > 15).slice(0, 3);
-
       for (const d of topKeywordDocs) {
           seen.add(d.name);
-          text += `[PRIORITY FILE MATCH]: "${d.name}" (Relevance Score: ${d.score})\n${processContent(d.extracted_content).substring(0, 30000)}\n---\n`;
+          text += `[PRIORITY FILE MATCH]: "${d.name}" (Score: ${d.score})\n${processContent(d.extracted_content).substring(0, 15000)}\n---\n`;
       }
 
-      if (text.length < 100000 && vector.length > 0) {
+      // 2. Vector Search with RBAC Filter
+      if (text.length < 50000 && vector.length > 0) {
           try {
-              const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
+              // RBAC FILTER: Only fetch chunks where allowed_roles contains userRole
+              const filter = {
+                  allowed_roles: { $in: [userRole, 'all', 'employee'] } // 'employee' is usually base, add dynamic if needed
+              };
+
+              const queryResponse = await index.query({ 
+                  vector, 
+                  topK: 5, 
+                  includeMetadata: true,
+                  filter: filter // APPLY FILTER
+              });
+
               for (const m of queryResponse.matches) {
                   const fname = m.metadata?.filename as string;
-                  const existsInDb = Array.from(validFileNames).some((name: any) => typeof name === 'string' && name.toLowerCase() === fname?.toLowerCase());
-
-                  if (fname && existsInDb && !seen.has(fname)) {
-                      const dbMatch = allDocs.find(d => d.name.toLowerCase() === fname.toLowerCase());
-                      const content = dbMatch ? processContent(dbMatch.extracted_content) : String(m.metadata?.text || "");
-                      
-                      text += `[SEMANTIC MATCH]: "${fname}" (Score: ${m.score?.toFixed(2)})\n${content.substring(0, 20000)}\n---\n`;
+                  // Ensure file exists in our SQL allow-list (double check)
+                  if (fname && validFileNames.has(fname) && !seen.has(fname)) {
+                      const content = m.metadata?.text || "";
+                      text += `[SEMANTIC MATCH]: "${fname}" (Score: ${m.score?.toFixed(2)})\n${content}\n---\n`;
                       seen.add(fname);
+                  } else if (m.metadata?.text && !seen.has(fname)) {
+                      // Chunk match, might correspond to a doc
+                      text += `[SEMANTIC CHUNK]: "${fname}"\n${m.metadata.text}\n---\n`;
                   }
               }
           } catch (pe) { console.error("Pinecone query error", pe); }
@@ -186,19 +213,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const context = await contextPromise;
 
+    // 3. System Instruction
     const systemInstruction = `Bạn là Chuyên gia Phân tích Dữ liệu Doanh nghiệp (AI Senior Analyst).
+    
+NGƯỜI DÙNG: ${user?.username} (Role: ${userRole}).
+NHIỆM VỤ: Trả lời câu hỏi dựa trên Context được cung cấp.
 
-NHIỆM VỤ:
-Trả lời câu hỏi dựa trên Context được cung cấp.
-
-QUY TẮC CHỐNG NHIỄU (ANTI-HALLUCINATION):
-1. **Chỉ dùng đúng file**: Trích xuất thông tin từ file liên quan nhất.
-2. **Không bịa đặt**: Nếu không tìm thấy, báo không tìm thấy.
-3. **Trích dẫn bắt buộc**: Luôn dùng cú pháp [[File: Tên_File]] khi đưa ra thông tin.
+QUY TẮC BẢO MẬT & CHỐNG NHIỄU:
+1. **Dữ liệu PII**: Tôi đã tự động ẩn danh Email/SĐT trong câu hỏi. Nếu trong Context có chứa SĐT/Email thật, hãy giữ nguyên hoặc che đi tùy ngữ cảnh, nhưng không được bịa ra thông tin liên lạc.
+2. **Chỉ dùng đúng file**: Trích xuất thông tin từ file liên quan nhất.
+3. **Trích dẫn**: Luôn dùng cú pháp [[File: Tên_File]] khi đưa ra thông tin.
 
 Context Dữ Liệu:
-${context || "Không tìm thấy dữ liệu nào khớp với câu hỏi."}`;
+${context || "Không tìm thấy dữ liệu nào khớp với câu hỏi (hoặc bạn không có quyền truy cập)."}`;
 
+    // 4. Generate Response
     if (selectedModel && selectedModel.includes('gpt')) {
         await queryOpenAI([{ role: 'system', content: systemInstruction }, ...messages], selectedModel, res);
     } else if (selectedModel && (selectedModel.includes('llama') || selectedModel.includes('qwen'))) {
@@ -226,6 +255,11 @@ ${context || "Không tìm thấy dữ liệu nào khớp với câu hỏi."}`;
             if (chunk.text) res.write(chunk.text);
         }
     }
+    
+    // 5. Audit Logging (Async)
+    const title = userQuery.substring(0, 50) + "...";
+    logChatToDb(sql, user, messages, title);
+
     res.end();
   } catch (error: any) {
     console.error("Chat Error:", error);

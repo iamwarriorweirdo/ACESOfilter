@@ -1,3 +1,4 @@
+
 import { serve } from "inngest/node";
 import { Inngest } from "inngest";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -10,6 +11,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import * as mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
+import { redactPII, recursiveChunking } from '../utils/textProcessor';
 
 // --- CONFIGURATION ---
 export const inngest = new Inngest({ id: "hr-rag-app" });
@@ -91,24 +93,67 @@ const processFileInBackground = inngest.createFunction(
   },
   { event: "app/process.file" },
   async ({ event, step }) => {
-    const { url, fileName, docId } = event.data;
-    if (!url || !docId) return { error: "Missing Input" };
+    const { url, fileName, docId, reindexOnly } = event.data;
+    if (!docId) return { error: "Missing docId" };
 
     try {
-      const configStep = await step.run("1-get-config", async () => {
+      const dbConfig = await step.run("1-get-config-db", async () => {
          const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
-         if (!dbUrl) return {};
          const { neon } = await import('@neondatabase/serverless');
-         const sql = neon(dbUrl.replace('postgresql://', 'postgres://'));
-         const rows = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
-         return rows.length > 0 ? JSON.parse(rows[0].data) : {};
+         const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
+         
+         const settings = await sql`SELECT data FROM system_settings WHERE id = 'global'`;
+         const docData = await sql`SELECT extracted_content, allowed_roles, full_text_content FROM documents WHERE id = ${docId}`;
+         
+         if (docData.length === 0) throw new Error("Document not found in DB");
+         
+         let allowedRoles = ['employee', 'hr', 'it', 'superadmin'];
+         if (docData[0].allowed_roles) {
+             try { allowedRoles = JSON.parse(docData[0].allowed_roles); } catch(e){}
+         }
+
+         return { 
+             config: settings.length > 0 ? JSON.parse(settings[0].data) : {},
+             doc: docData[0],
+             allowedRoles
+         };
       });
 
-      const ingestionApiKey = process.env.OCR_API_KEY || configStep.ocrApiKey || process.env.API_KEY || "";
+      // --- RE-INDEX MODE (RBAC Update Only) ---
+      if (reindexOnly) {
+           await step.run("reindex-rbac", async () => {
+              if (process.env.PINECONE_API_KEY) {
+                  await updateDbStatus(docId, `Cập nhật quyền truy cập...`);
+                  const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
+                  const index = pc.index(process.env.PINECONE_INDEX_NAME!);
+                  
+                  // Note: Pinecone metadata update is tricky without known chunk IDs. 
+                  // For a proper update, we fetch vectors with prefix docId and update them.
+                  const list = await index.listPaginated({ prefix: docId });
+                  if (list.vectors) {
+                      for (const v of list.vectors) {
+                           if (v.id) {
+                               await index.update({
+                                   id: v.id,
+                                   metadata: { allowed_roles: dbConfig.allowedRoles }
+                               });
+                           }
+                      }
+                  }
+                  await updateDbStatus(docId, `Cập nhật quyền hoàn tất.`);
+              }
+           });
+           return { success: true, mode: 'reindex' };
+      }
+
+      // --- FULL PROCESSING MODE ---
+      if (!url) return { error: "Missing URL for full process" };
+
+      const ingestionApiKey = process.env.OCR_API_KEY || dbConfig.config.ocrApiKey || process.env.API_KEY || "";
       if (!ingestionApiKey) throw new Error("Missing API Key for OCR");
 
       const strategy = await step.run("2-check-strategy", async () => {
-          await updateDbStatus(docId, `Kiểm tra kích thước file...`);
+          await updateDbStatus(docId, `Kiểm tra file...`);
           try {
               const headRes = await fetch(url, { method: 'HEAD' });
               const size = Number(headRes.headers.get('content-length') || 0);
@@ -120,18 +165,18 @@ const processFileInBackground = inngest.createFunction(
 
       const ocrResult = await step.run("3-smart-ocr", async () => {
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
-          const mimeType = getMimeType(fileName);
+          const mimeType = getMimeType(fileName || "doc");
           const isSupported = isGeminiFileSupported(mimeType);
 
           // Chọn model OCR dựa trên config hoặc auto
-          let ocrModel = configStep.ocrModel || 'auto';
+          let ocrModel = dbConfig.config.ocrModel || 'auto';
           if (ocrModel === 'auto') {
               ocrModel = 'gemini-3-flash-preview';
           }
 
           if (strategy.isLarge) {
-              await updateDbStatus(docId, `File lớn. Đang tải Stream...`);
-              const tempFilePath = path.join(os.tmpdir(), `partial_${docId}_${Date.now()}.${fileName.split('.').pop()}`);
+              await updateDbStatus(docId, `File lớn. Đang xử lý Stream...`);
+              const tempFilePath = path.join(os.tmpdir(), `partial_${docId}_${Date.now()}.${(fileName || "file").split('.').pop()}`);
               
               try {
                   const response = await fetch(url);
@@ -162,7 +207,7 @@ const processFileInBackground = inngest.createFunction(
                               contents: {
                                   parts: [
                                       { fileData: { fileUri: googleFile.uri, mimeType } },
-                                      { text: "Trích xuất toàn bộ nội dung văn bản quan trọng từ tài liệu này để làm chỉ mục tìm kiếm." }
+                                      { text: "Trích xuất toàn bộ nội dung văn bản quan trọng từ tài liệu này." }
                                   ]
                               }
                           });
@@ -172,12 +217,12 @@ const processFileInBackground = inngest.createFunction(
                           try { if (googleFile) await genAI.files.delete({ name: googleFile.name }); } catch (e) {}
                       }
                   } else {
-                      // Xử lý local cho Docx/Xlsx
+                      // Local extraction for docx/xlsx fallback
                       let text = "";
-                      if (fileName.endsWith('.docx')) {
+                      if (fileName?.endsWith('.docx')) {
                            const result = await mammoth.extractRawText({ path: tempFilePath });
                            text = result.value;
-                      } else if (fileName.endsWith('.xlsx')) {
+                      } else if (fileName?.endsWith('.xlsx')) {
                            const workbook = XLSX.readFile(tempFilePath);
                            text = XLSX.utils.sheet_to_txt(workbook.Sheets[workbook.SheetNames[0]]);
                       }
@@ -210,18 +255,25 @@ const processFileInBackground = inngest.createFunction(
           }
       });
 
-      const metaResult = await step.run("4-analyze-metadata", async () => {
-          if (!ocrResult.text) return { title: fileName, summary: "Lỗi đọc nội dung." };
-          await updateDbStatus(docId, `AI đang chuẩn hóa Index...`);
+      // --- PII REDACTION STEP ---
+      const cleanText = await step.run("4-pii-redaction", async () => {
+          if (!ocrResult.text) return "";
+          await updateDbStatus(docId, `Đang ẩn danh dữ liệu (PII)...`);
+          return redactPII(ocrResult.text);
+      });
+
+      const metaResult = await step.run("5-analyze-metadata", async () => {
+          if (!cleanText) return { title: fileName, summary: "Lỗi đọc nội dung." };
+          await updateDbStatus(docId, `AI chuẩn hóa Index...`);
           
-          let analysisModel = configStep.analysisModel || 'auto';
+          let analysisModel = dbConfig.config.analysisModel || 'auto';
           if (analysisModel === 'auto') analysisModel = 'gemini-3-flash-preview';
 
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
           try {
               const res = await genAI.models.generateContent({
                   model: analysisModel,
-                  contents: `Phân tích dữ liệu sau và trả về JSON: { "title": "Tiêu đề", "summary": "Tóm tắt ngắn", "language": "vi/en", "key_information": ["ý chính 1", "ý chính 2"] }. Dữ liệu: ${ocrResult.text.substring(0, 10000)}`,
+                  contents: `Phân tích văn bản (đã che PII) sau và trả về JSON: { "title": "Tiêu đề", "summary": "Tóm tắt ngắn", "language": "vi/en", "key_information": ["ý chính 1", "ý chính 2"] }. Dữ liệu: ${cleanText.substring(0, 10000)}`,
                   config: { responseMimeType: "application/json" }
               });
               return JSON.parse(res.text || "{}");
@@ -230,14 +282,15 @@ const processFileInBackground = inngest.createFunction(
           }
       });
 
-      await step.run("5-save-db", async () => {
+      await step.run("6-save-db", async () => {
           const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
           const { neon } = await import('@neondatabase/serverless');
           const sql = neon(dbUrl!.replace('postgresql://', 'postgres://'));
           
           const finalContent = {
               ...metaResult,
-              full_text_content: ocrResult.text, 
+              // Lưu text đã redact PII để an toàn khi query SQL
+              full_text_content: cleanText, 
               parse_method: ocrResult.method,
               is_partial_index: ocrResult.isPartial 
           };
@@ -245,23 +298,52 @@ const processFileInBackground = inngest.createFunction(
           await sql`UPDATE documents SET extracted_content = ${JSON.stringify(finalContent)}, status = 'indexed' WHERE id = ${docId}`;
       });
 
-      await step.run("6-vectorize", async () => {
-          if (!ocrResult.text || ocrResult.text.length < 10) return;
-          await updateDbStatus(docId, `Tạo Search Vector...`);
+      await step.run("7-vectorize-chunks", async () => {
+          if (!cleanText || cleanText.length < 10) return;
+          await updateDbStatus(docId, `Cắt Chunk & Vector hóa...`);
           
+          // RECURSIVE CHUNKING
+          const chunks = recursiveChunking(cleanText, 1000, 200);
+          console.log(`Created ${chunks.length} chunks for doc ${docId}`);
+
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
-          const embeddingModel = configStep.embeddingModel || 'embedding-001';
-          const vector = await getEmbeddingWithFallback(genAI, ocrResult.text.substring(0, 8000), embeddingModel);
+          const embeddingModel = dbConfig.config.embeddingModel || 'embedding-001';
           
-          if (vector.length > 0 && process.env.PINECONE_API_KEY) {
+          if (process.env.PINECONE_API_KEY) {
               const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
               const index = pc.index(process.env.PINECONE_INDEX_NAME!);
-              await index.upsert([{
-                  id: docId,
-                  values: vector,
-                  metadata: { filename: fileName, text: ocrResult.text.substring(0, 4000) }
-              }] as any);
-              await updateDbStatus(docId, `Hoàn tất.`);
+
+              // Process chunks in batches to avoid API limits
+              const BATCH_SIZE = 5;
+              for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+                  const batch = chunks.slice(i, i + BATCH_SIZE);
+                  const vectorsToUpsert = [];
+
+                  for (let j = 0; j < batch.length; j++) {
+                      const chunkText = batch[j];
+                      const vector = await getEmbeddingWithFallback(genAI, chunkText, embeddingModel);
+                      if (vector.length > 0) {
+                          vectorsToUpsert.push({
+                              id: `${docId}_chk_${i + j}`, // Unique ID per chunk
+                              values: vector,
+                              metadata: { 
+                                  filename: fileName, 
+                                  text: chunkText,
+                                  doc_id: docId,
+                                  allowed_roles: dbConfig.allowedRoles // IMPORTANT: RBAC Metadata
+                              }
+                          });
+                      }
+                  }
+
+                  if (vectorsToUpsert.length > 0) {
+                      await index.upsert(vectorsToUpsert as any);
+                  }
+                  
+                  // Simple rate limit helper
+                  await new Promise(r => setTimeout(r, 1000));
+              }
+              await updateDbStatus(docId, `Hoàn tất (${chunks.length} chunks).`);
           }
       });
 
@@ -282,8 +364,12 @@ const deleteFileInBackground = inngest.createFunction(
              if (process.env.PINECONE_API_KEY) {
                  try {
                      const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
-                     await pc.index(process.env.PINECONE_INDEX_NAME!).deleteMany([docId]);
-                 } catch (e) { }
+                     const index = pc.index(process.env.PINECONE_INDEX_NAME!);
+                     
+                     // Delete all chunks for this document using metadata filter
+                     // doc_id is the metadata key we use to group chunks
+                     await index.deleteMany({ filter: { doc_id: { $eq: docId } } }); 
+                 } catch (e) { console.error("Pinecone delete error", e); }
              }
         });
         return { deleted: docId };

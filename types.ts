@@ -47,6 +47,7 @@ export interface Document {
   extractedContent?: string;
   category?: string;
   status?: string;
+  allowedRoles?: string[] | UserRole[];
 }
 
 export interface User {

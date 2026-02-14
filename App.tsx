@@ -156,6 +156,10 @@ const App: React.FC = () => {
         if (user) {
             fetchDocs();
             fetchFolders();
+            // Load chat history if available
+            safeFetchJson(`/api/app?handler=chats&username=${user.username}`).then(data => {
+                if(data.sessions) setSessions(data.sessions);
+            }).catch(() => {});
         }
     }, [user]);
 
@@ -164,7 +168,13 @@ const App: React.FC = () => {
         try {
             const details = await safeFetchJson(`/api/app?handler=files&id=${doc.id}`);
             if (details.extracted_content) {
-                setDocuments(prev => prev.map(d => d.id === doc.id ? { ...d, extractedContent: details.extracted_content } : d));
+                setDocuments(prev => prev.map(d => d.id === doc.id ? { 
+                    ...d, 
+                    extractedContent: details.extracted_content,
+                    allowedRoles: details.allowedRoles 
+                } : d));
+                // Update local editing doc with details including allowedRoles
+                setEditingDoc(prev => prev ? ({...prev, allowedRoles: details.allowedRoles}) : null);
             }
         } catch (e) {
             console.error("Failed to fetch doc details", e);
@@ -237,7 +247,8 @@ const App: React.FC = () => {
                 uploadedBy: user?.username || 'system',
                 extractedContent: 'Đang chờ xử lý (Queued for AI OCR)...',
                 // If we are overwriting, we want to reset status so Ingest picks it up
-                status: 'pending' 
+                status: 'pending',
+                allowedRoles: ['employee', 'hr', 'it', 'superadmin'] // Default allow all
             };
 
             await fetch('/api/app?handler=files', {
@@ -354,10 +365,15 @@ const App: React.FC = () => {
         setInput('');
         setIsLoading(true);
         try {
+            // IMPORTANT: Sending user info to chat API for RBAC
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: newHistory, config: config })
+                body: JSON.stringify({ 
+                    messages: newHistory, 
+                    config: config,
+                    user: user // Pass user context with role
+                })
             });
             if (!response.ok) throw new Error("Chat error");
             const reader = response.body?.getReader();

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Document, Language } from '../types';
+import { Document, Language, UserRole } from '../types';
 import { TRANSLATIONS } from '../constants';
-import { X, FileText, Loader2, Download, Terminal, Activity, CheckCircle, Image as ImageIcon } from 'lucide-react';
+import { X, FileText, Loader2, Download, Terminal, Activity, CheckCircle, Image as ImageIcon, Shield } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
 
@@ -20,7 +20,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     onSave,
     language
 }) => {
-    const [activeTab, setActiveTab] = useState<'preview' | 'extracted'>('preview');
+    const [activeTab, setActiveTab] = useState<'preview' | 'extracted' | 'permissions'>('preview');
     const [viewMode, setViewMode] = useState<'google' | 'native' | 'proxy' | 'image'>('google');
     const [previewHtml, setPreviewHtml] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -28,6 +28,9 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
     const [localContent, setLocalContent] = useState<string>('');
     const [logs, setLogs] = useState<string[]>([]);
     const [timeoutError, setTimeoutError] = useState(false);
+    
+    // RBAC State
+    const [allowedRoles, setAllowedRoles] = useState<UserRole[]>(['employee', 'hr', 'it', 'superadmin']);
 
     const logContainerRef = useRef<HTMLDivElement>(null);
     const t = (TRANSLATIONS as any)[language] || TRANSLATIONS.en;
@@ -96,6 +99,13 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             setActiveTab('preview');
             setLocalContent(document.extractedContent || "");
             
+            // Sync RBAC
+            if (document.allowedRoles) {
+                setAllowedRoles(document.allowedRoles as UserRole[]);
+            } else {
+                setAllowedRoles(['employee', 'hr', 'it', 'superadmin']);
+            }
+            
             if (document.extractedContent && !document.extractedContent.startsWith('{')) {
                 setLogs([document.extractedContent]);
             }
@@ -134,6 +144,23 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
             }
         }
     }, [document, isOpen]);
+
+    const savePermissions = async () => {
+        if (!document) return;
+        try {
+            await fetch('/api/app?handler=files', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: document.id,
+                    allowedRoles: allowedRoles
+                })
+            });
+            alert("Đã cập nhật quyền truy cập!");
+        } catch (e) {
+            alert("Lỗi khi lưu quyền.");
+        }
+    };
 
     if (!isOpen || !document) return null;
 
@@ -203,6 +230,14 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
         }
     };
 
+    const toggleRole = (role: UserRole) => {
+        setAllowedRoles(prev => 
+            prev.includes(role) 
+                ? prev.filter(r => r !== role)
+                : [...prev, role]
+        );
+    };
+
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-2 md:p-6 animate-fade-in">
             <div className="bg-card w-full max-w-6xl h-full md:h-[90vh] rounded-xl border border-border flex flex-col shadow-2xl overflow-hidden">
@@ -222,6 +257,7 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                     <div className="flex gap-2 shrink-0 items-start">
                         <button onClick={() => setActiveTab('preview')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'preview' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-muted-foreground hover:bg-muted'}`}>Preview</button>
                         <button onClick={() => setActiveTab('extracted')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'extracted' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-muted-foreground hover:bg-muted'}`}>JSON Index</button>
+                        <button onClick={() => setActiveTab('permissions')} className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'permissions' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'text-muted-foreground hover:bg-muted'}`}>Permissions</button>
                         <button onClick={onClose} className="p-2 hover:bg-red-500/10 hover:text-red-500 rounded-lg transition-colors text-muted-foreground"><X size={20}/></button>
                     </div>
                 </div>
@@ -251,8 +287,43 @@ const EditDocumentDialog: React.FC<EditDocumentDialogProps> = ({
                                 )}
                             </div>
                         </div>
-                    ) : (
+                    ) : activeTab === 'extracted' ? (
                         renderJsonContent(localContent)
+                    ) : (
+                        <div className="p-10 space-y-8 flex flex-col items-center justify-center h-full">
+                            <div className="text-center space-y-2">
+                                <div className="w-16 h-16 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-4 text-orange-500 border border-orange-500/20">
+                                    <Shield size={32} />
+                                </div>
+                                <h3 className="text-xl font-bold text-foreground uppercase tracking-tight">Phân quyền truy cập</h3>
+                                <p className="text-sm text-muted-foreground">Chọn nhóm người dùng được phép tìm kiếm và xem nội dung từ tài liệu này.</p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 w-full max-w-md">
+                                {(['employee', 'hr', 'it', 'superadmin'] as UserRole[]).map(role => {
+                                    const isSelected = allowedRoles.includes(role);
+                                    return (
+                                        <button 
+                                            key={role}
+                                            onClick={() => toggleRole(role)}
+                                            className={`p-4 rounded-xl border flex items-center justify-between transition-all ${isSelected ? 'bg-primary/10 border-primary text-primary' : 'bg-background border-border text-muted-foreground hover:border-primary/50'}`}
+                                        >
+                                            <span className="font-bold text-sm uppercase">{role}</span>
+                                            <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${isSelected ? 'bg-primary border-primary' : 'border-muted-foreground'}`}>
+                                                {isSelected && <CheckCircle size={14} className="text-white" />}
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+
+                            <div className="flex gap-4">
+                                <button onClick={savePermissions} className="px-8 py-3 bg-primary text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all">
+                                    Lưu Thay Đổi
+                                </button>
+                            </div>
+                            <p className="text-xs text-muted-foreground italic">Lưu ý: Thay đổi sẽ yêu cầu hệ thống Index lại Metadata (mất khoảng vài giây).</p>
+                        </div>
                     )}
                 </div>
             </div>
