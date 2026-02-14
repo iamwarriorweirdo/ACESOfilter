@@ -4,6 +4,7 @@ import AdminView from './components/AdminView';
 import UserView from './components/UserView';
 import { TRANSLATIONS } from './constants';
 import EditDocumentDialog from './components/EditDocumentDialog';
+import UploadConflictDialog from './components/UploadConflictDialog';
 import { Eye, EyeOff, LogIn, Globe, Moon, Sun, Lock, User as UserIcon } from 'lucide-react';
 import { compressImage } from './utils/imageCompression';
 
@@ -54,6 +55,9 @@ const App: React.FC = () => {
         embeddingModel: 'embedding-001',
         maxFileSizeMB: 100
     });
+
+    // Conflict Handling State
+    const [conflictQueue, setConflictQueue] = useState<{ file: File; existingDoc: Document }[]>([]);
 
     useEffect(() => {
         const loadConfig = async () => {
@@ -210,57 +214,135 @@ const App: React.FC = () => {
         return signData.publicUrl;
     };
 
+    // Reusable function to process a single file upload
+    const processSingleFileUpload = async (file: File, folderId: string | null, existingDocId?: string) => {
+        try {
+            let fileToUpload = file;
+            if (file.type.startsWith('image/')) {
+                try { fileToUpload = await compressImage(file); } catch (e) {}
+            }
+            
+            const url = await uploadFileHybrid(fileToUpload);
+            // If overwriting, use existing ID. Otherwise generate new ID.
+            const docId = existingDocId || Math.random().toString(36).substr(2, 9);
+            
+            const newDoc = {
+                id: docId,
+                name: fileToUpload.name,
+                type: fileToUpload.type || 'application/octet-stream',
+                content: url,
+                size: fileToUpload.size,
+                uploadDate: Date.now(),
+                folderId,
+                uploadedBy: user?.username || 'system',
+                extractedContent: 'Đang chờ xử lý (Queued for AI OCR)...',
+                // If we are overwriting, we want to reset status so Ingest picks it up
+                status: 'pending' 
+            };
+
+            await fetch('/api/app?handler=files', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newDoc)
+            });
+
+            await fetch('/api/app?handler=trigger-ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, fileName: fileToUpload.name, docId })
+            });
+
+            return { fileName: file.name, success: true };
+        } catch (err: any) {
+            return { fileName: file.name, success: false, error: err?.message };
+        }
+    };
+
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, folderId: string | null) => {
         if (!e.target.files) return;
         const files = Array.from(e.target.files) as File[];
         const maxSizeBytes = (config.maxFileSizeMB || 100) * 1024 * 1024;
         const oversizedFiles = files.filter(f => f.size > maxSizeBytes);
         if (oversizedFiles.length > 0) {
-            alert(`File vượt giới hạn ${config.maxFileSizeMB}MB`);
+            alert(`File vượt giới hạn ${config.maxFileSizeMB}MB: ${oversizedFiles.map(f=>f.name).join(', ')}`);
             return;
         }
+
         setIsUploading(true);
         setShowUploadResultModal(false);
-        const results: { fileName: string; success: boolean; error?: string }[] = new Array(files.length);
-        const processOne = async (file: File, index: number) => {
-            try {
-                let fileToUpload = file;
-                if (file.type.startsWith('image/')) {
-                    try { fileToUpload = await compressImage(file); } catch (e) {}
-                }
-                const url = await uploadFileHybrid(fileToUpload);
-                const docId = Math.random().toString(36).substr(2, 9);
-                const newDoc = {
-                    id: docId,
-                    name: fileToUpload.name,
-                    type: fileToUpload.type || 'application/octet-stream',
-                    content: url,
-                    size: fileToUpload.size,
-                    uploadDate: Date.now(),
-                    folderId,
-                    uploadedBy: user?.username || 'system',
-                    extractedContent: 'Đang chờ xử lý (Queued for AI OCR)...'
-                };
-                await fetch('/api/app?handler=files', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(newDoc)
-                });
-                await fetch('/api/app?handler=trigger-ingest', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, fileName: fileToUpload.name, docId })
-                });
-                fetchDocs();
-                results[index] = { fileName: file.name, success: true };
-            } catch (err: any) {
-                results[index] = { fileName: file.name, success: false, error: err?.message };
+
+        const safeFiles: File[] = [];
+        const conflictingFiles: { file: File; existingDoc: Document }[] = [];
+
+        // Check for duplicates locally first
+        files.forEach(file => {
+            const existing = documents.find(d => 
+                d.name === file.name && 
+                d.folderId === folderId
+            );
+            if (existing) {
+                conflictingFiles.push({ file, existingDoc: existing });
+            } else {
+                safeFiles.push(file);
             }
-        };
-        await Promise.all(files.map((file, i) => processOne(file, i)));
-        setUploadResults([...results]);
-        setShowUploadResultModal(true);
-        setIsUploading(false);
+        });
+
+        // 1. Upload Safe Files Immediately
+        const safeResults = await Promise.all(safeFiles.map(f => processSingleFileUpload(f, folderId)));
+        
+        // Update results with safe uploads
+        setUploadResults(prev => [...safeResults]);
+        
+        // 2. Queue Conflicts
+        if (conflictingFiles.length > 0) {
+            setConflictQueue(conflictingFiles);
+        } else {
+            // If no conflicts, we are done
+            fetchDocs();
+            setIsUploading(false);
+            if (safeFiles.length > 0) setShowUploadResultModal(true);
+        }
+    };
+
+    const handleResolveConflict = async (action: 'overwrite' | 'keep' | 'skip') => {
+        const currentConflict = conflictQueue[0];
+        if (!currentConflict) return;
+
+        const { file, existingDoc } = currentConflict;
+        let result;
+
+        setIsUploading(true);
+
+        if (action === 'overwrite') {
+            // Overwrite: Upload new file but use OLD ID to update DB record
+            result = await processSingleFileUpload(file, existingDoc.folderId, existingDoc.id);
+        } else if (action === 'keep') {
+            // Keep Both: Rename file (append timestamp) -> Upload as new ID
+            const extension = file.name.split('.').pop();
+            const baseName = file.name.substring(0, file.name.lastIndexOf('.'));
+            const newName = `${baseName}_copy_${Date.now()}.${extension}`;
+            
+            const renamedFile = new File([file], newName, { type: file.type });
+            result = await processSingleFileUpload(renamedFile, existingDoc.folderId);
+        } else {
+            // Skip
+            result = { fileName: file.name, success: false, error: "Skipped by user" };
+        }
+
+        if (action !== 'skip') {
+             setUploadResults(prev => [...prev, result]);
+        }
+
+        // Remove processed conflict from queue
+        const remaining = conflictQueue.slice(1);
+        setConflictQueue(remaining);
+
+        // If queue empty, finish up
+        if (remaining.length === 0) {
+            fetchDocs();
+            setIsUploading(false);
+            setShowUploadResultModal(true);
+        }
     };
 
     const handleChatSubmit = async (e: React.FormEvent) => {
@@ -411,6 +493,16 @@ const App: React.FC = () => {
                 }}
                 language={language}
             />
+            {conflictQueue.length > 0 && (
+                <UploadConflictDialog 
+                    isOpen={true}
+                    filename={conflictQueue[0].file.name}
+                    onOverwrite={() => handleResolveConflict('overwrite')}
+                    onKeepBoth={() => handleResolveConflict('keep')}
+                    onSkip={() => handleResolveConflict('skip')}
+                    language={language}
+                />
+            )}
         </div>
     );
 };
