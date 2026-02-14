@@ -4,11 +4,11 @@ import { neon } from '@neondatabase/serverless';
 import Groq from "groq-sdk";
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'text-embedding-004') {
+async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingModel: string = 'embedding-001') {
     const openAiKey = process.env.OPEN_AI_API_KEY;
     
     // 1. OpenAI (If configured)
-    if (configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
+    if (configEmbeddingModel && configEmbeddingModel.includes('text-embedding-3') && openAiKey) {
          try {
              const openAiRes = await (fetch as any)("https://api.openai.com/v1/embeddings", {
                  method: "POST",
@@ -21,26 +21,16 @@ async function getSafeEmbedding(ai: GoogleGenAI, text: string, configEmbeddingMo
          } catch (oe) { }
     }
 
-    // 2. Gemini Primary (text-embedding-004)
+    // 2. Gemini Primary (Sử dụng embedding-001 là model duy nhất hợp lệ cho Gemini Embedding lúc này)
     try {
         const res = await ai.models.embedContent({
-            model: "text-embedding-004",
+            model: "embedding-001",
             contents: [{ parts: [{ text }] }]
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
-        console.warn(`Gemini text-embedding-004 failed: ${e.message}. Trying fallback...`);
-        // 3. Gemini Fallback (embedding-001) - Fixes "model not found" 404 errors
-        try {
-            const res = await ai.models.embedContent({
-                model: "embedding-001",
-                contents: [{ parts: [{ text }] }]
-            });
-            return res.embeddings?.[0]?.values || [];
-        } catch (e2) {
-             console.error("All embedding attempts failed.");
-             return [];
-        }
+        console.warn(`Gemini embedding failed: ${e.message}.`);
+        return [];
     }
 }
 
@@ -85,15 +75,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const lastMessage = messages?.[messages.length - 1];
     if (!lastMessage) return res.status(400).json({ error: "No messages" });
 
-    let inputModel = config?.aiModel || config?.chatModel || 'gemini-3-flash-preview';
+    let inputModel = config?.chatModel || 'auto';
     let selectedModel = 'gemini-3-flash-preview';
     
-    if (inputModel.includes('gpt')) selectedModel = inputModel;
-    else if (inputModel.includes('llama') || inputModel.includes('qwen')) selectedModel = inputModel;
-    else if (inputModel.includes('gemini')) selectedModel = inputModel;
-    else selectedModel = 'gemini-3-flash-preview';
+    // Logic "Auto" selection
+    if (inputModel === 'auto') {
+        const isComplex = lastMessage.content.length > 500 || messages.length > 5;
+        selectedModel = isComplex ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+    } else {
+        selectedModel = inputModel;
+    }
 
-    const embeddingModel = config?.embeddingModel || 'text-embedding-004';
+    const embeddingModel = config?.embeddingModel || 'embedding-001';
     const userQuery = lastMessage.content;
     
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -117,23 +110,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const trimmed = raw.trim();
               if (trimmed.startsWith('{')) {
                   const data = JSON.parse(trimmed);
-                  // JSON Clean Strategy: Only extracting essential text to reduce noise
                   return `Title: ${data.title}\nSummary: ${data.summary}\nFull Text: ${data.full_text_content || ""}`;
               }
           } catch (e) { }
           return raw;
       };
 
-      // 1. IMPROVED RETRIEVAL: Query Expansion & Keyword Tokenization
       const keywords = userQuery.split(/\s+/).filter((w: string) => w.length > 2).map((w: string) => `%${w}%`);
-      
       const validDocsPromise = sql`SELECT name, extracted_content FROM documents`; 
       const vectorPromise = getSafeEmbedding(ai, userQuery, embeddingModel);
 
       const [allDocs, vector] = await Promise.all([validDocsPromise, vectorPromise]);
       const validFileNames = new Set(allDocs.map(d => d.name));
 
-      // 2. ADVANCED HEURISTIC RERANKING (Name + Content + Relevance)
       const scoredDocs = allDocs.map((d: any) => {
           let score = 0;
           const nameLower = d.name.toLowerCase();
@@ -141,7 +130,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           
           let contentLower = "";
           try {
-             // Try to parse JSON to search in relevant fields
              if (d.extracted_content?.trim().startsWith('{')) {
                 const json = JSON.parse(d.extracted_content);
                 contentLower = (json.full_text_content || json.summary || "").toLowerCase();
@@ -152,35 +140,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
              contentLower = (d.extracted_content || "").toLowerCase();
           }
           
-          // A. Exact Name Match (Highest Priority) - e.g. "Nội quy" found in "Noi_quy.pdf"
           if (nameLower.includes(queryLower)) score += 200;
-          
-          // B. Exact Content Match (High Priority)
           if (contentLower.includes(queryLower)) score += 50;
 
-          // C. Keyword Matching
-          let matchedKeywords = 0;
           keywords.forEach((k: string) => {
               const cleanKey = k.replace(/%/g, '').toLowerCase();
               if (cleanKey.length < 2) return; 
 
               if (nameLower.includes(cleanKey)) {
-                  score += 30; // Keyword in Name is worth more
-                  matchedKeywords++;
+                  score += 30;
               } else if (contentLower.includes(cleanKey)) {
-                  score += 10; // Keyword in Content
-                  matchedKeywords++;
+                  score += 10;
               }
           });
-
-          // D. Keyword Density Bonus (If multiple keywords match, it's likely relevant)
-          if (matchedKeywords >= keywords.length && keywords.length > 1) score += 40;
 
           return { ...d, score };
       }).sort((a: any, b: any) => b.score - a.score);
 
-      // Filter Noise: Only take docs with score > 15 (Must have at least partial match)
-      // This prevents "random documents" from being included when score is 0.
       const topKeywordDocs = scoredDocs.filter((d: any) => d.score > 15).slice(0, 3);
 
       for (const d of topKeywordDocs) {
@@ -188,17 +164,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           text += `[PRIORITY FILE MATCH]: "${d.name}" (Relevance Score: ${d.score})\n${processContent(d.extracted_content).substring(0, 30000)}\n---\n`;
       }
 
-      // 3. SEMANTIC SEARCH (Fallback if embedding works)
       if (text.length < 100000 && vector.length > 0) {
           try {
               const queryResponse = await index.query({ vector, topK: 3, includeMetadata: true });
               for (const m of queryResponse.matches) {
                   const fname = m.metadata?.filename as string;
-                  // Fix: Property 'toLowerCase' does not exist on type 'unknown'. Use explicit type check/cast.
                   const existsInDb = Array.from(validFileNames).some((name: any) => typeof name === 'string' && name.toLowerCase() === fname?.toLowerCase());
 
                   if (fname && existsInDb && !seen.has(fname)) {
-                      // Avoid duplicates
                       const dbMatch = allDocs.find(d => d.name.toLowerCase() === fname.toLowerCase());
                       const content = dbMatch ? processContent(dbMatch.extracted_content) : String(m.metadata?.text || "");
                       
@@ -213,24 +186,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const context = await contextPromise;
 
-    // 4. ADVANCED SYSTEM PROMPT
     const systemInstruction = `Bạn là Chuyên gia Phân tích Dữ liệu Doanh nghiệp (AI Senior Analyst).
 
 NHIỆM VỤ:
 Trả lời câu hỏi dựa trên Context được cung cấp.
 
 QUY TẮC CHỐNG NHIỄU (ANTI-HALLUCINATION):
-1. **Chỉ dùng đúng file**: Nếu câu hỏi về "Nội quy", chỉ trích xuất thông tin từ file có tiêu đề hoặc nội dung chứa "Nội quy". Bỏ qua các file khác trong Context nếu chúng không liên quan (ví dụ: file "Quy trình đăng ký làm thêm giờ" nếu không được hỏi).
-2. **Không bịa đặt**: Nếu không tìm thấy thông tin chính xác trong Context, hãy nói: "Tôi đã tìm trong các tài liệu hiện có (ví dụ: [[File: ...]]) nhưng không thấy thông tin chi tiết bạn cần."
-3. **Ưu tiên file điểm cao**: Các phần [PRIORITY FILE MATCH] có độ chính xác cao hơn [SEMANTIC MATCH].
-4. **Trích dẫn bắt buộc**: Luôn dùng cú pháp [[File: Tên_File]] khi đưa ra thông tin.
+1. **Chỉ dùng đúng file**: Trích xuất thông tin từ file liên quan nhất.
+2. **Không bịa đặt**: Nếu không tìm thấy, báo không tìm thấy.
+3. **Trích dẫn bắt buộc**: Luôn dùng cú pháp [[File: Tên_File]] khi đưa ra thông tin.
 
 Context Dữ Liệu:
 ${context || "Không tìm thấy dữ liệu nào khớp với câu hỏi."}`;
 
-    if (selectedModel.includes('gpt')) {
+    if (selectedModel && selectedModel.includes('gpt')) {
         await queryOpenAI([{ role: 'system', content: systemInstruction }, ...messages], selectedModel, res);
-    } else if (selectedModel.includes('llama') || selectedModel.includes('qwen')) {
+    } else if (selectedModel && (selectedModel.includes('llama') || selectedModel.includes('qwen'))) {
         const strRes = await groq.chat.completions.create({
             messages: [{ role: 'system', content: systemInstruction }, ...messages] as any,
             model: selectedModel,
@@ -257,7 +228,7 @@ ${context || "Không tìm thấy dữ liệu nào khớp với câu hỏi."}`;
     }
     res.end();
   } catch (error: any) {
-    console.error("Chat Error Handled:", error);
+    console.error("Chat Error:", error);
     if (!res.headersSent) {
         res.status(500).json({ error: error.message || "Internal Server Error" });
     } else {

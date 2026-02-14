@@ -33,14 +33,15 @@ async function updateDbStatus(docId: string, message: string, isError = false) {
   } catch (e) { console.error("DB Log Error:", e); }
 }
 
-async function getEmbeddingWithFallback(ai: GoogleGenAI, text: string, primaryModel: string = 'text-embedding-004'): Promise<number[]> {
+async function getEmbeddingWithFallback(ai: GoogleGenAI, text: string, primaryModel: string = 'embedding-001'): Promise<number[]> {
     try {
         const res = await ai.models.embedContent({
-            model: primaryModel,
+            model: "embedding-001",
             contents: { parts: [{ text }] }
         });
         return res.embeddings?.[0]?.values || [];
     } catch (e: any) {
+        console.error("Embedding failed:", e.message);
         return [];
     }
 }
@@ -72,14 +73,13 @@ function getMimeType(fileName: string): string {
 function isGeminiFileSupported(mimeType: string): boolean {
     const supported = [
         'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         'text/plain', 'text/html', 'text/css', 'text/md', 'text/csv', 'text/xml', 'text/rtf',
-        'application/x-javascript', 'text/javascript', 'application/x-python', 'text/x-python',
-        'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
-        'audio/wav', 'audio/mp3', 'audio/aiff', 'audio/aac', 'audio/ogg', 'audio/flac',
-        'video/mp4', 'video/mpeg', 'video/mov', 'video/avi', 'video/x-flv', 'video/mpg', 'video/webm', 'video/wmv', 'video/3gpp'
+        'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'
     ];
-    return supported.includes(mimeType) || mimeType.startsWith('image/') || mimeType.startsWith('video/') || mimeType.startsWith('audio/');
+    return supported.includes(mimeType) || mimeType.startsWith('image/');
 }
 
 // --- CORE FUNCTION ---
@@ -123,22 +123,26 @@ const processFileInBackground = inngest.createFunction(
           const mimeType = getMimeType(fileName);
           const isSupported = isGeminiFileSupported(mimeType);
 
+          // Chọn model OCR dựa trên config hoặc auto
+          let ocrModel = configStep.ocrModel || 'auto';
+          if (ocrModel === 'auto') {
+              ocrModel = 'gemini-3-flash-preview';
+          }
+
           if (strategy.isLarge) {
-              await updateDbStatus(docId, `File lớn (${(strategy.size/1024/1024).toFixed(1)}MB). Đang tải Stream...`);
-              
+              await updateDbStatus(docId, `File lớn. Đang tải Stream...`);
               const tempFilePath = path.join(os.tmpdir(), `partial_${docId}_${Date.now()}.${fileName.split('.').pop()}`);
               
               try {
                   const response = await fetch(url);
                   if (!response.ok || !response.body) throw new Error("Download failed");
-                  // @ts-ignore
-                  const nodeStream = Readable.fromWeb(response.body);
+                  const nodeStream = Readable.fromWeb(response.body as any);
                   await pipeline(nodeStream, fs.createWriteStream(tempFilePath));
 
                   if (isSupported) {
                       let googleFile: any = null;
                       try {
-                          await updateDbStatus(docId, `Đang đẩy file sang Google AI Server...`);
+                          await updateDbStatus(docId, `Đẩy file sang Google AI...`);
                           const uploadResult = await genAI.files.upload({
                               file: tempFilePath,
                               config: { mimeType }
@@ -151,130 +155,73 @@ const processFileInBackground = inngest.createFunction(
                               const freshFile = await genAI.files.get({ name: googleFile.name });
                               fileState = freshFile.state;
                           }
-                          if (fileState === "FAILED") throw new Error("Google AI failed to process file.");
-
-                          await updateDbStatus(docId, `AI đang phân tích bài thuyết trình...`);
-                          const prompt = `Đây là một tài liệu lớn. ĐỪNG cố gắng đọc hết toàn bộ từng chữ.
-                          Nhiệm vụ của bạn là tạo một bản tóm tắt metadata chất lượng cao để làm chỉ mục tìm kiếm (Index).
-                          Trích xuất: 1. Tiêu đề chính. 2. Các ý chính của từng slide quan trọng. 3. Tóm tắt nội dung cốt lõi. 4. Từ khóa liên quan. Trả về JSON theo cấu trúc yêu cầu.`;
-
+                          
+                          await updateDbStatus(docId, `AI đang phân tích...`);
                           const result = await genAI.models.generateContent({
-                              model: "gemini-3-flash-preview",
+                              model: ocrModel,
                               contents: {
                                   parts: [
                                       { fileData: { fileUri: googleFile.uri, mimeType } },
-                                      { text: prompt }
+                                      { text: "Trích xuất toàn bộ nội dung văn bản quan trọng từ tài liệu này để làm chỉ mục tìm kiếm." }
                                   ]
                               }
                           });
 
-                          return { 
-                              text: result.text || "", 
-                              method: "gemini-file-api-large",
-                              isPartial: true
-                          };
+                          return { text: result.text || "", method: `gemini-file-api-${ocrModel}`, isPartial: true };
                       } finally {
                           try { if (googleFile) await genAI.files.delete({ name: googleFile.name }); } catch (e) {}
                       }
                   } else {
-                      await updateDbStatus(docId, `Định dạng ${mimeType} xử lý cục bộ giới hạn...`);
+                      // Xử lý local cho Docx/Xlsx
                       let text = "";
-                      try {
-                          if (mimeType.includes('wordprocessingml') || fileName.endsWith('.docx')) {
-                               const result = await mammoth.extractRawText({ path: tempFilePath });
-                               text = result.value;
-                          } else if (mimeType.includes('spreadsheet') || fileName.endsWith('.xlsx')) {
-                               const workbook = XLSX.readFile(tempFilePath);
-                               const sheetName = workbook.SheetNames[0];
-                               text = XLSX.utils.sheet_to_txt(workbook.Sheets[sheetName]);
-                          } else {
-                               text = fs.readFileSync(tempFilePath, 'utf-8');
-                          }
-                      } catch(e: any) {
-                          throw new Error(`Local extraction failed for ${fileName}: ${e.message}`);
+                      if (fileName.endsWith('.docx')) {
+                           const result = await mammoth.extractRawText({ path: tempFilePath });
+                           text = result.value;
+                      } else if (fileName.endsWith('.xlsx')) {
+                           const workbook = XLSX.readFile(tempFilePath);
+                           text = XLSX.utils.sheet_to_txt(workbook.Sheets[workbook.SheetNames[0]]);
                       }
-
-                      const safeText = (text || "").substring(0, 50000);
-                      return {
-                          text: `[PARTIAL LOCAL EXTRACT]\n${safeText}`,
-                          method: "local-disk-extract",
-                          isPartial: true
-                      };
+                      return { text: text.substring(0, 50000), method: "local-extract", isPartial: true };
                   }
-              } catch (e: any) {
-                  throw new Error(`Large File Error: ${e.message}`);
               } finally {
                   try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) {}
               }
-          } 
-          else {
-              await updateDbStatus(docId, `Tải tài liệu vào bộ nhớ RAM...`);
+          } else {
+              // Xử lý file nhỏ trong RAM
               const res = await fetch(url);
-              const arrayBuffer = await res.arrayBuffer();
-              const buffer = Buffer.from(arrayBuffer);
+              const buffer = Buffer.from(await res.arrayBuffer());
               const base64 = buffer.toString('base64');
               
               let text = "";
-              let method = "unknown";
-              const lowName = fileName.toLowerCase();
-
-              try {
-                  if (lowName.endsWith('.txt') || lowName.endsWith('.md') || lowName.endsWith('.csv')) {
-                      text = buffer.toString('utf-8');
-                      method = "text-direct";
-                  } else if (lowName.endsWith('.pdf')) {
-                      try {
-                          // @ts-ignore
-                          const pdfParseModule = await import('pdf-parse');
-                          const pdf = pdfParseModule.default || pdfParseModule;
-                          const data = await pdf(buffer);
-                          text = data.text;
-                          method = "pdf-parse-local";
-                      } catch (e) {}
-                  } else if (lowName.endsWith('.docx')) {
-                      const result = await mammoth.extractRawText({ buffer: buffer });
-                      text = result.value;
-                      method = "mammoth-docx-buffer";
-                  } else if (lowName.endsWith('.xlsx') || lowName.endsWith('.xls')) {
-                      const workbook = XLSX.read(buffer, { type: 'buffer' });
-                      const sheetName = workbook.SheetNames[0];
-                      text = XLSX.utils.sheet_to_txt(workbook.Sheets[sheetName]);
-                      method = "xlsx-buffer";
-                  }
-              } catch (e) { }
-
-              if ((!text || text.length < 50) && isSupported) {
-                   await updateDbStatus(docId, `AI Vision đang quét nội dung...`);
-                   const res = await genAI.models.generateContent({
-                        model: "gemini-3-flash-preview",
+              if (isSupported) {
+                   await updateDbStatus(docId, `AI đang quét nội dung...`);
+                   const resAi = await genAI.models.generateContent({
+                        model: ocrModel,
                         contents: {
                             parts: [
                                 { inlineData: { data: base64, mimeType } },
-                                { text: "Phân tích và trích xuất nội dung văn bản chính từ tài liệu này." }
+                                { text: "Trích xuất nội dung văn bản chính." }
                             ]
                         }
                     });
-                    text = res.text || "";
-                    method = "gemini-vision-buffer";
+                    text = resAi.text || "";
               }
-
-              return { text: (text || "").substring(0, 80000), method, isPartial: false };
+              return { text: text.substring(0, 80000), method: ocrModel, isPartial: false };
           }
       });
 
       const metaResult = await step.run("4-analyze-metadata", async () => {
           if (!ocrResult.text) return { title: fileName, summary: "Lỗi đọc nội dung." };
-          
           await updateDbStatus(docId, `AI đang chuẩn hóa Index...`);
-          const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
           
+          let analysisModel = configStep.analysisModel || 'auto';
+          if (analysisModel === 'auto') analysisModel = 'gemini-3-flash-preview';
+
+          const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
           try {
-              const context = ocrResult.text.substring(0, 10000);
-              const prompt = `Phân tích dữ liệu sau và trả về JSON: { "title": "Tiêu đề", "summary": "Tóm tắt ngắn", "language": "vi/en", "key_information": ["ý chính 1", "ý chính 2"] }. Dữ liệu: ${context}`;
-              
               const res = await genAI.models.generateContent({
-                  model: "gemini-3-flash-preview",
-                  contents: prompt,
+                  model: analysisModel,
+                  contents: `Phân tích dữ liệu sau và trả về JSON: { "title": "Tiêu đề", "summary": "Tóm tắt ngắn", "language": "vi/en", "key_information": ["ý chính 1", "ý chính 2"] }. Dữ liệu: ${ocrResult.text.substring(0, 10000)}`,
                   config: { responseMimeType: "application/json" }
               });
               return JSON.parse(res.text || "{}");
@@ -295,34 +242,30 @@ const processFileInBackground = inngest.createFunction(
               is_partial_index: ocrResult.isPartial 
           };
           
-          await sql`UPDATE documents SET extracted_content = ${JSON.stringify(finalContent)}, status = ${ocrResult.isPartial ? 'indexed_partial' : 'indexed'} WHERE id = ${docId}`;
+          await sql`UPDATE documents SET extracted_content = ${JSON.stringify(finalContent)}, status = 'indexed' WHERE id = ${docId}`;
       });
 
       await step.run("6-vectorize", async () => {
           if (!ocrResult.text || ocrResult.text.length < 10) return;
-          await updateDbStatus(docId, `Đang tạo Search Vector...`);
+          await updateDbStatus(docId, `Tạo Search Vector...`);
           
           const genAI = new GoogleGenAI({ apiKey: ingestionApiKey });
-          const vector = await getEmbeddingWithFallback(genAI, ocrResult.text.substring(0, 8000));
+          const embeddingModel = configStep.embeddingModel || 'embedding-001';
+          const vector = await getEmbeddingWithFallback(genAI, ocrResult.text.substring(0, 8000), embeddingModel);
           
           if (vector.length > 0 && process.env.PINECONE_API_KEY) {
               const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
               const index = pc.index(process.env.PINECONE_INDEX_NAME!);
-              
               await index.upsert([{
                   id: docId,
                   values: vector,
-                  metadata: {
-                      filename: fileName,
-                      text: ocrResult.text.substring(0, 4000)
-                  }
+                  metadata: { filename: fileName, text: ocrResult.text.substring(0, 4000) }
               }] as any);
               await updateDbStatus(docId, `Hoàn tất.`);
           }
       });
 
       return { success: true };
-
     } catch (e: any) {
         await updateDbStatus(docId, `Lỗi: ${e.message}`, true);
         throw e;
@@ -347,10 +290,4 @@ const deleteFileInBackground = inngest.createFunction(
     }
 );
 
-const syncDatabaseBackground = inngest.createFunction(
-    { id: "sync-database-background" },
-    { event: "app/sync.database" },
-    async ({ event }) => { return { status: "synced" }; }
-);
-
-export default serve({ client: inngest, functions: [processFileInBackground, deleteFileInBackground, syncDatabaseBackground] });
+export default serve({ client: inngest, functions: [processFileInBackground, deleteFileInBackground] });

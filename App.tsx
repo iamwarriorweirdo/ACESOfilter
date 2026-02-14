@@ -47,10 +47,11 @@ const App: React.FC = () => {
     const [config, setConfig] = useState<SystemConfig>({
         maintenanceMode: false,
         allowPublicUpload: false,
-        aiModel: 'gemini-3-flash-preview',
-        ocrModel: 'gemini-3-flash-preview',
-        analysisModel: 'gemini-3-flash-preview',
-        chatModel: 'gemini-2.5-flash-lite',
+        aiModel: 'auto',
+        ocrModel: 'auto',
+        analysisModel: 'auto',
+        chatModel: 'auto',
+        embeddingModel: 'embedding-001',
         maxFileSizeMB: 100
     });
 
@@ -154,7 +155,6 @@ const App: React.FC = () => {
         }
     }, [user]);
 
-    // CHIẾN LƯỢC: Lazy loading - Chỉ fetch nội dung lớn khi cần mở dialog
     const handleOpenEditDoc = async (doc: Document) => {
         setEditingDoc(doc);
         try {
@@ -169,109 +169,70 @@ const App: React.FC = () => {
 
     const uploadFileHybrid = async (file: File): Promise<string> => {
         const CLOUDINARY_LIMIT = 10 * 1024 * 1024; // 10MB
-        
-        // 1. Phân loại storage dựa trên kích thước
         if (file.size < CLOUDINARY_LIMIT) {
-            // Cố gắng dùng Cloudinary
             try {
                 const signRes = await fetch('/api/app?handler=sign-cloudinary', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ timestamp: Math.round(Date.now() / 1000) })
                 });
-
                 const signData = await signRes.json();
-
-                // Nếu Backend báo chưa cấu hình Cloudinary (fallback: true) -> Chuyển sang Supabase
-                if (!signRes.ok && signData.fallback) {
-                    console.warn("Cloudinary chưa cấu hình, chuyển sang Supabase.");
-                    // Fall through to Supabase logic below
-                } else if (!signRes.ok) {
-                    // Lỗi khác (vd: 500) -> Throw lỗi, KHÔNG fallback để tránh nhầm lẫn
-                    throw new Error(signData.error || "Lỗi lấy chữ ký Cloudinary");
-                } else {
-                    // Có chữ ký -> Upload lên Cloudinary
+                if (signRes.ok) {
                     const formData = new FormData();
                     formData.append('file', file);
                     formData.append('api_key', signData.apiKey);
                     formData.append('timestamp', signData.timestamp);
                     formData.append('signature', signData.signature);
                     formData.append('folder', signData.folder);
-
                     const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${signData.cloudName}/auto/upload`, {
                         method: 'POST',
                         body: formData
                     });
-                    
-                    if (!uploadRes.ok) {
-                        const err = await uploadRes.json();
-                        throw new Error(`Cloudinary Upload Failed: ${err.error?.message || 'Unknown error'}`);
+                    if (uploadRes.ok) {
+                        const data = await uploadRes.json();
+                        return data.secure_url;
                     }
-                    
-                    const data = await uploadRes.json();
-                    return data.secure_url; // DỪNG TẠI ĐÂY NẾU THÀNH CÔNG
                 }
-            } catch (e: any) {
-                // Nếu đã cố dùng Cloudinary mà lỗi -> Throw luôn, không tự động chuyển Supabase
-                // Để user biết là Cloudinary đang lỗi
-                console.error("Strict Cloudinary Upload Error:", e);
-                throw e;
-            }
+            } catch (e) {}
         }
-
-        // 2. Logic Supabase (Cho file > 10MB hoặc khi Cloudinary chưa config)
         const signData = await safeFetchJson('/api/app?handler=upload-supabase', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename: file.name })
         });
-        
         if (!signData.uploadUrl) throw new Error("Supabase Signed URL missing");
-        
         const uploadRes = await fetch(signData.uploadUrl, {
             method: 'PUT',
             body: file,
             headers: { 'Content-Type': 'application/octet-stream' }
         });
-        
         if (!uploadRes.ok) throw new Error(`Supabase Upload Failed`);
         return signData.publicUrl;
     };
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, folderId: string | null) => {
         if (!e.target.files) return;
-        
-        // CHECK FILE SIZE LIMIT
         const files = Array.from(e.target.files) as File[];
         const maxSizeBytes = (config.maxFileSizeMB || 100) * 1024 * 1024;
         const oversizedFiles = files.filter(f => f.size > maxSizeBytes);
-        
         if (oversizedFiles.length > 0) {
-            alert(`Có ${oversizedFiles.length} file vượt quá giới hạn ${config.maxFileSizeMB}MB:\n${oversizedFiles.map(f => `- ${f.name} (${(f.size/1024/1024).toFixed(1)}MB)`).join('\n')}`);
+            alert(`File vượt giới hạn ${config.maxFileSizeMB}MB`);
             return;
         }
-
         setIsUploading(true);
         setShowUploadResultModal(false);
         const results: { fileName: string; success: boolean; error?: string }[] = new Array(files.length);
-        
         const processOne = async (file: File, index: number) => {
             try {
-                // OPTIMIZATION: Nén ảnh trước khi upload
                 let fileToUpload = file;
                 if (file.type.startsWith('image/')) {
-                    try {
-                        fileToUpload = await compressImage(file);
-                    } catch (compressionErr) {
-                        console.warn("Lỗi nén ảnh, sẽ dùng ảnh gốc:", compressionErr);
-                    }
+                    try { fileToUpload = await compressImage(file); } catch (e) {}
                 }
-
                 const url = await uploadFileHybrid(fileToUpload);
                 const docId = Math.random().toString(36).substr(2, 9);
                 const newDoc = {
                     id: docId,
-                    name: fileToUpload.name, // Use new name (might change extension to .jpg)
+                    name: fileToUpload.name,
                     type: fileToUpload.type || 'application/octet-stream',
                     content: url,
                     size: fileToUpload.size,
@@ -288,7 +249,7 @@ const App: React.FC = () => {
                 await fetch('/api/app?handler=trigger-ingest', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, fileName: fileToUpload.name, fileType: fileToUpload.type, docId })
+                    body: JSON.stringify({ url, fileName: fileToUpload.name, docId })
                 });
                 fetchDocs();
                 results[index] = { fileName: file.name, success: true };
@@ -314,7 +275,7 @@ const App: React.FC = () => {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: newHistory, config: { aiModel: config.aiModel } })
+                body: JSON.stringify({ messages: newHistory, config: config })
             });
             if (!response.ok) throw new Error("Chat error");
             const reader = response.body?.getReader();
@@ -397,16 +358,6 @@ const App: React.FC = () => {
                             {isLoggingIn ? "Authenticating..." : <><LogIn size={20} /> {t.loginBtn}</>}
                         </button>
                     </form>
-                    <div className="mt-8 pt-6 border-t border-border flex justify-between items-center">
-                        <div className="flex gap-2">
-                            {['en', 'vi', 'zh'].map(lang => (
-                                <button key={lang} onClick={() => handleSetLanguage(lang as Language)} className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold transition-all ${language === lang ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}>{lang.toUpperCase()}</button>
-                            ))}
-                        </div>
-                        <button onClick={toggleTheme} className="p-2 rounded-lg bg-muted text-foreground hover:bg-muted/80 transition-colors">
-                            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-                        </button>
-                    </div>
                 </div>
             </div>
         );
@@ -416,131 +367,50 @@ const App: React.FC = () => {
         <div className="h-screen w-full flex flex-col">
             {user?.role === 'employee' ? (
                 <UserView
-                    documents={documents}
-                    folders={folders}
-                    messages={messages}
-                    isLoading={isLoading}
-                    input={input}
-                    onInputChange={setInput}
-                    onSubmit={handleChatSubmit}
-                    hasContext={documents.length > 0}
-                    language={language}
-                    setLanguage={handleSetLanguage}
-                    onClearChat={() => setMessages([])}
-                    onViewDocument={(name) => {
-                        const doc = documents.find(d => d.name === name);
-                        if (doc) handleOpenEditDoc(doc);
-                    }}
-                    sessions={sessions}
-                    currentSessionId={currentSessionId}
-                    onNewChat={() => { setMessages([]); setCurrentSessionId(null); }}
-                    onSelectSession={(s) => { setMessages(s.messages); setCurrentSessionId(s.id); }}
-                    onDeleteSession={(id) => setSessions(prev => prev.filter(s => s.id !== id))}
-                    theme={theme}
-                    toggleTheme={toggleTheme}
-                    onLogout={handleLogout}
-                    currentUser={user}
+                    documents={documents} folders={folders} messages={messages} isLoading={isLoading} input={input} onInputChange={setInput}
+                    onSubmit={handleChatSubmit} hasContext={documents.length > 0} language={language} setLanguage={handleSetLanguage}
+                    onClearChat={() => setMessages([])} onViewDocument={(name) => { const doc = documents.find(d => d.name === name); if (doc) handleOpenEditDoc(doc); }}
+                    sessions={sessions} currentSessionId={currentSessionId} onNewChat={() => { setMessages([]); setCurrentSessionId(null); }}
+                    onSelectSession={(s) => { setMessages(s.messages); setCurrentSessionId(s.id); }} onDeleteSession={(id) => setSessions(prev => prev.filter(s => s.id !== id))}
+                    theme={theme} toggleTheme={toggleTheme} onLogout={handleLogout} currentUser={user}
                 />
             ) : (
                 <AdminView
-                    documents={documents}
-                    folders={folders}
+                    documents={documents} folders={folders} 
                     onCreateFolder={async (name, parentId) => {
-                        await fetch('/api/app?handler=folders', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'create', id: Math.random().toString(36).substr(2, 9), name, parentId })
-                        });
+                        await fetch('/api/app?handler=folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create', id: Math.random().toString(36).substr(2, 9), name, parentId }) });
                         fetchFolders();
                     }}
                     onRenameFolder={async (id, newName) => {
-                        await fetch('/api/app?handler=folders', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'update', id, name: newName })
-                        });
+                        await fetch('/api/app?handler=folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'update', id, name: newName }) });
                         fetchFolders();
                     }}
                     onDeleteFolder={async (id) => {
-                        if (!window.confirm("Bạn có chắc chắn muốn xóa thư mục này?")) return;
-                        await fetch('/api/app?handler=folders', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'delete', id })
-                        });
+                        if (!window.confirm("Xóa thư mục?")) return;
+                        await fetch('/api/app?handler=folders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'delete', id }) });
                         fetchFolders();
                     }}
-                    isUploading={isUploading}
-                    onUpload={handleUpload}
-                    onClearDocs={() => { }}
-                    onEditDoc={handleOpenEditDoc}
+                    isUploading={isUploading} onUpload={handleUpload} onClearDocs={() => { }} onEditDoc={handleOpenEditDoc}
                     onDeleteDoc={async (id) => {
                         await fetch('/api/app?handler=files', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
                         fetchDocs();
                     }}
-                    language={language}
-                    setLanguage={handleSetLanguage}
-                    messages={messages}
-                    isLoading={isLoading}
-                    input={input}
-                    onInputChange={setInput}
-                    onSubmit={handleChatSubmit}
-                    currentUserRole={user?.role || 'employee'}
-                    currentUsername={user?.username || ''}
-                    sessions={sessions}
-                    currentSessionId={currentSessionId}
-                    onNewChat={() => { setMessages([]); setCurrentSessionId(null); }}
-                    onSelectSession={(s) => { setMessages(s.messages); setCurrentSessionId(s.id); }}
-                    onDeleteSession={(id) => setSessions(prev => prev.filter(s => s.id !== id))}
-                    config={config}
-                    setConfig={handleSetConfig}
-                    theme={theme}
-                    toggleTheme={toggleTheme}
-                    onLogout={handleLogout}
+                    language={language} setLanguage={handleSetLanguage} messages={messages} isLoading={isLoading} input={input}
+                    onInputChange={setInput} onSubmit={handleChatSubmit} currentUserRole={user?.role || 'employee'} currentUsername={user?.username || ''}
+                    sessions={sessions} currentSessionId={currentSessionId} onNewChat={() => { setMessages([]); setCurrentSessionId(null); }}
+                    onSelectSession={(s) => { setMessages(s.messages); setCurrentSessionId(s.id); }} onDeleteSession={(id) => setSessions(prev => prev.filter(s => s.id !== id))}
+                    config={config} setConfig={handleSetConfig} theme={theme} toggleTheme={toggleTheme} onLogout={handleLogout}
                 />
             )}
-
             <EditDocumentDialog
                 document={editingDoc ? (documents.find(d => d.id === editingDoc.id) ?? editingDoc) : null}
-                isOpen={!!editingDoc}
-                onClose={() => setEditingDoc(null)}
+                isOpen={!!editingDoc} onClose={() => setEditingDoc(null)}
                 onSave={async (id, content) => {
                     await fetch('/api/app?handler=files', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, extractedContent: content }) });
                     fetchDocs();
                 }}
                 language={language}
             />
-
-            {showUploadResultModal && uploadResults.length > 0 && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowUploadResultModal(false)}>
-                    <div className="bg-card border border-border rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="p-4 border-b border-border flex justify-between items-center">
-                            <h3 className="font-bold text-lg">Kết quả tải lên</h3>
-                            <button type="button" className="p-2 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground" onClick={() => setShowUploadResultModal(false)}>×</button>
-                        </div>
-                        <div className="p-4 overflow-auto flex-1">
-                            <table className="w-full text-sm">
-                                <thead>
-                                    <tr className="border-b border-border text-left">
-                                        <th className="py-2 pr-2 font-medium">Tên file</th>
-                                        <th className="py-2 pr-2 font-medium w-24">Trạng thái</th>
-                                        <th className="py-2 font-medium">Chi tiết</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {uploadResults.map((r, i) => (
-                                        <tr key={i} className="border-b border-border/50">
-                                            <td className="py-2 pr-2 truncate max-w-[200px]" title={r.fileName}>{r.fileName}</td>
-                                            <td className="py-2 pr-2"><span className={r.success ? 'text-green-600' : 'text-red-600'}>{r.success ? 'Thành công' : 'Lỗi'}</span></td>
-                                            <td className="py-2 text-muted-foreground break-words">{r.error ?? '—'}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 };

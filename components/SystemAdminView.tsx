@@ -1,4 +1,3 @@
-
 import { SystemConfig, Language, Document } from '../types';
 import { TRANSLATIONS } from '../constants';
 import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight, Workflow, ScanEye } from 'lucide-react';
@@ -78,18 +77,15 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
             msg: d.extractedContent?.substring(0, 100) || "Process finished"
         }));
 
-    // Logic kiểm tra online dựa trên biến ENV mới
-    const isOpenAiOnline = !!process.env.OPEN_AI_API_KEY;
-
     return (
         <div className={isEmbedded ? "h-full w-full bg-background p-6" : "p-8 overflow-y-auto"}>
             <div className="max-w-7xl mx-auto space-y-8 pb-20">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
                     <StatusCard icon={<Activity className="text-green-500" />} label="Hệ thống" value="Active" sub="Multi-Cloud Failover" borderColor="border-green-500/20" />
-                    <StatusCard icon={<Zap className="text-orange-500" />} label="Groq AI" value={process.env.GROQ_API_KEY ? "READY" : "OFF"} sub="Llama-3.3 / Qwen" borderColor="border-orange-500/20" />
-                    <StatusCard icon={<Cloud className="text-blue-500" />} label="OpenAI" value={isOpenAiOnline ? "ONLINE" : "CHECK ENV"} sub="GPT-4o Mini (Free Tier)" borderColor="border-blue-500/20" />
+                    <StatusCard icon={<Zap className="text-orange-500" />} label="AI Engine" value="HYBRID" sub="Llama-3 / Gemini" borderColor="border-orange-500/20" />
+                    <StatusCard icon={<Cloud className="text-blue-500" />} label="Storage" value="CONNECTED" sub="Hybrid Cloud" borderColor="border-blue-500/20" />
                     <StatusCard icon={<Layers className="text-indigo-500" />} label="Dung lượng" value={`${totalSizeMB} MB`} sub="Hybrid DB" borderColor="border-indigo-500/20" />
-                    <StatusCard icon={<Cpu className="text-amber-500" />} label="Model chính" value={localConfig.chatModel?.split('-')[0].toUpperCase() || "GEMINI"} sub="Active Engine" borderColor="border-amber-500/20" />
+                    <StatusCard icon={<Cpu className="text-amber-500" />} label="Model chính" value={localConfig.chatModel === 'auto' ? "AUTO" : "MANUAL"} sub="Processing Unit" borderColor="border-amber-500/20" />
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -109,70 +105,70 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <ConfigField label="OCR Strategy (Vision)" sub="Trích xuất chữ từ ảnh/PDF scan (Ưu tiên Vision Models)">
+                                <ConfigField label="OCR Strategy (Vision)" sub="Trích xuất chữ từ ảnh/PDF scan">
                                     <select 
-                                        value={localConfig.ocrModel || 'gemini-3-flash-preview'}
+                                        value={localConfig.ocrModel || 'auto'}
                                         onChange={e => handleLocalChange('ocrModel', e.target.value)}
-                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <optgroup label="Google Gemini">
-                                            <option value="gemini-3-flash-preview">Gemini 3.0 Flash (Recommended)</option>
-                                            <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp</option>
+                                        <option value="auto">Auto (Khuyên dùng)</option>
+                                        <optgroup label="Gemini 3 (Mới nhất)">
+                                            <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                                            <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
                                         </optgroup>
-                                        <optgroup label="OpenAI">
-                                            <option value="gpt-4o-mini">GPT-4o Mini (Vision)</option>
+                                        <optgroup label="Gemini 2.5">
+                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
                                         </optgroup>
-                                        <optgroup label="Groq">
-                                            <option value="llama-3.2-11b-vision-preview">Llama 3.2 11B Vision</option>
-                                            <option value="llama-3.2-90b-vision-preview">Llama 3.2 90B Vision</option>
+                                        <optgroup label="Gemini 2">
+                                            <option value="gemini-2.0-flash">Gemini 2 Flash</option>
+                                            <option value="gemini-2.0-pro-exp">Gemini 2 Pro (Exp)</option>
                                         </optgroup>
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Embedding Model (RAG)" sub="Tạo Vector cho tìm kiếm ngữ nghĩa">
+                                <ConfigField label="Embedding Model (RAG)" sub="Tạo Vector tìm kiếm (Chỉ dùng Gemini Embedding 1)">
                                     <select 
-                                        value={localConfig.embeddingModel || 'text-embedding-004'}
+                                        value={localConfig.embeddingModel || 'embedding-001'}
                                         onChange={e => handleLocalChange('embeddingModel', e.target.value)}
-                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <optgroup label="Google Gemini">
-                                            <option value="text-embedding-004">Gemini Text Embedding 004</option>
-                                        </optgroup>
-                                        <optgroup label="OpenAI">
-                                            <option value="text-embedding-3-small">OpenAI Text Embedding 3 Small</option>
-                                            <option value="text-embedding-3-large">OpenAI Text Embedding 3 Large</option>
-                                        </optgroup>
+                                        <option value="embedding-001">Gemini Embedding 1 (Khuyên dùng)</option>
+                                        <option value="text-embedding-3-small">OpenAI Embedding 3 Small</option>
                                     </select>
                                 </ConfigField>
 
                                 <ConfigField label="Analysis Engine" sub="Phân loại và tóm tắt JSON Metadata">
                                     <select 
-                                        value={localConfig.analysisModel || 'gemini-3-flash-preview'}
+                                        value={localConfig.analysisModel || 'auto'}
                                         onChange={e => handleLocalChange('analysisModel', e.target.value)}
-                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-                                        <option value="gpt-4o-mini">OpenAI GPT-4o Mini</option>
-                                        <option value="llama-3.3-70b-versatile">Groq Llama 3.3 70B</option>
+                                        <option value="auto">Auto (Tự chọn model tốt nhất)</option>
+                                        <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                                        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                        <option value="gpt-4o-mini">GPT-4o Mini</option>
+                                        <option value="llama-3.3-70b-versatile">Groq Llama 3.3</option>
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Chat RAG Interface" sub="Model tương tác chính với người dùng">
+                                <ConfigField label="Chat Interface Model" sub="Model tương tác chính với người dùng">
                                     <select 
-                                        value={localConfig.chatModel || 'gemini-3-flash-preview'}
+                                        value={localConfig.chatModel || 'auto'}
                                         onChange={e => handleLocalChange('chatModel', e.target.value)}
-                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <optgroup label="Google Gemini">
-                                            <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-                                            <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                                        <option value="auto">Auto (Dynamic Switching)</option>
+                                        <optgroup label="Gemini 3">
+                                            <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
+                                            <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                                         </optgroup>
-                                        <optgroup label="Groq">
-                                            <option value="llama-3.3-70b-versatile">Llama 3.3 70B Versatile</option>
-                                            <option value="qwen-2.5-32b">Qwen 2.5 32B</option>
+                                        <optgroup label="Gemini 2.5">
+                                            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                         </optgroup>
-                                        <optgroup label="OpenAI">
-                                            <option value="gpt-4o-mini">GPT-4o Mini</option>
+                                        <optgroup label="Groq AI">
+                                            <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
                                         </optgroup>
                                     </select>
                                 </ConfigField>
@@ -184,7 +180,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                         max="500"
                                         value={localConfig.maxFileSizeMB || 100}
                                         onChange={e => handleLocalChange('maxFileSizeMB', parseInt(e.target.value) || 100)}
-                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none"
+                                        className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     />
                                 </ConfigField>
                             </div>
@@ -194,13 +190,13 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             <div className="flex items-center justify-between border-b border-border pb-4">
                                 <div className="flex items-center gap-3">
                                     <Key className="text-orange-500" />
-                                    <h3 className="text-xl font-bold uppercase tracking-tight">API & Keys Configuration</h3>
+                                    <h3 className="text-xl font-bold uppercase tracking-tight">API & Security Configuration</h3>
                                 </div>
                             </div>
                             
                             <div className="space-y-4">
                                 <p className="text-xs text-muted-foreground italic bg-muted/30 p-3 rounded-lg border border-border">
-                                    Lưu ý: Các API Key dưới đây sẽ được lưu vào biến môi trường hệ thống. Nếu bạn đã thiết lập trong Vercel Environment Variables, không cần điền vào đây.
+                                    Hệ thống ưu tiên sử dụng Key từ Environment Variables. Các Key được cấu hình tại đây sẽ ghi đè nếu được cung cấp.
                                 </p>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
                                     <ConfigField label="OCR / Vision API Key" sub="Dành riêng cho xử lý file (Tránh Rate Limit)">
@@ -210,33 +206,11 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                                 type="password"
                                                 value={localConfig.ocrApiKey || ''}
                                                 onChange={e => handleLocalChange('ocrApiKey', e.target.value)}
-                                                className="w-full bg-muted/50 border border-border rounded-xl pl-10 pr-4 py-3 text-sm font-mono outline-none focus:ring-2 focus:ring-primary/20"
-                                                placeholder={process.env.OCR_API_KEY ? "•••• (Set in Env)" : "AIzaSy..."}
+                                                className="w-full bg-muted/50 border border-border rounded-xl pl-10 pr-4 py-3 text-sm font-mono outline-none focus:ring-2 focus:ring-primary/20 text-foreground"
+                                                placeholder="AIzaSy..."
                                             />
                                         </div>
                                     </ConfigField>
-
-                                    <ConfigField label="OpenAI API Key" sub="Dùng cho GPT-4o Mini / Embeddings">
-                                        <input 
-                                            type="password"
-                                            onChange={e => {}}
-                                            className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-mono outline-none"
-                                            placeholder={process.env.OPEN_AI_API_KEY ? "•••••••• (Active)" : "sk-..."}
-                                            disabled={true} 
-                                        />
-                                    </ConfigField>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                    <label className="relative inline-flex items-center cursor-pointer">
-                                        <input 
-                                            type="checkbox" 
-                                            className="sr-only peer" 
-                                            checked={!!localConfig.enableAdobeCompression}
-                                            onChange={e => handleLocalChange('enableAdobeCompression', e.target.checked)}
-                                        />
-                                        <div className="w-11 h-6 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                                        <span className="ml-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">Kích hoạt Tối ưu hóa Adobe</span>
-                                    </label>
                                 </div>
                             </div>
                         </div>
@@ -245,17 +219,17 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                     <div className="space-y-8">
                         <div className="bg-card border border-border rounded-[2rem] p-8 shadow-sm space-y-6">
                             <h3 className="text-sm font-black uppercase tracking-widest text-muted-foreground border-b border-border pb-4 flex items-center gap-2">
-                                <Database size={16} /> {t.dbManagement}
+                                <Database size={16} /> Quản lý Dữ liệu
                             </h3>
                             <div className="space-y-3">
                                 <button onClick={handleDownloadBackup} disabled={isBackingUp} className="w-full flex items-center justify-between p-4 rounded-2xl bg-muted/30 hover:bg-primary/10 border border-border hover:border-primary/20 transition-all group">
                                     <div className="flex items-center gap-3">
-                                        <div className="p-2 rounded-lg bg-background border border-border group-hover:bg-primary group-hover:text-white transition-all">
+                                        <div className="p-2 rounded-lg bg-background border border-border group-hover:bg-primary group-hover:text-white transition-all text-foreground">
                                             {isBackingUp ? <Loader2 size={16} className="animate-spin" /> : <FileJson size={16} />}
                                         </div>
                                         <div className="text-left">
-                                            <div className="text-xs font-bold">{t.backupData}</div>
-                                            <div className="text-[10px] text-muted-foreground">Download JSON local backup</div>
+                                            <div className="text-xs font-bold text-foreground">Sao lưu hệ thống</div>
+                                            <div className="text-[10px] text-muted-foreground">Download JSON backup</div>
                                         </div>
                                     </div>
                                     <DownloadCloud size={16} className="text-muted-foreground" />
@@ -263,12 +237,12 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
 
                                 <button onClick={handleSyncDatabase} disabled={isSyncing} className="w-full flex items-center justify-between p-4 rounded-2xl bg-muted/30 hover:bg-emerald-500/10 border border-border hover:border-emerald-500/20 transition-all group">
                                     <div className="flex items-center gap-3">
-                                        <div className="p-2 rounded-lg bg-background border border-border group-hover:bg-emerald-500 group-hover:text-white transition-all">
+                                        <div className="p-2 rounded-lg bg-background border border-border group-hover:bg-emerald-500 group-hover:text-white transition-all text-foreground">
                                             {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
                                         </div>
                                         <div className="text-left">
-                                            <div className="text-xs font-bold">Đồng bộ Database</div>
-                                            <div className="text-[10px] text-muted-foreground">Dọn dẹp Vector rác (Ghost Data) trong Pinecone</div>
+                                            <div className="text-xs font-bold text-foreground">Đồng bộ Vector</div>
+                                            <div className="text-[10px] text-muted-foreground">Dọn dẹp Vector rác</div>
                                         </div>
                                     </div>
                                     <ChevronRight size={16} className="text-muted-foreground" />
@@ -306,7 +280,16 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
     );
 };
 
-const StatusCard = ({ icon, label, value, sub, borderColor }: any) => <div className={`bg-card border ${borderColor} p-6 rounded-2xl shadow-sm`}><div className="flex items-center justify-between mb-2"><span className="text-xs text-muted-foreground font-bold uppercase">{label}</span>{icon}</div><div className="text-2xl font-black">{value}</div><div className="text-[10px] text-muted-foreground opacity-60 uppercase font-bold">{sub}</div></div>;
+const StatusCard = ({ icon, label, value, sub, borderColor }: any) => (
+    <div className={`bg-card border ${borderColor} p-6 rounded-2xl shadow-sm`}>
+        <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-muted-foreground font-bold uppercase">{label}</span>
+            {icon}
+        </div>
+        <div className="text-2xl font-black text-foreground">{value}</div>
+        <div className="text-[10px] text-muted-foreground opacity-60 uppercase font-bold">{sub}</div>
+    </div>
+);
 
 const ConfigField = ({ label, sub, children }: { label: string, sub: string, children?: React.ReactNode }) => (
     <div className="space-y-2">

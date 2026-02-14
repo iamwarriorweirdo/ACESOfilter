@@ -1,4 +1,3 @@
-
 import { GoogleGenAI } from "@google/genai";
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
 import { Pinecone } from '@pinecone-database/pinecone';
@@ -38,7 +37,7 @@ async function retrieveContext(state: typeof AgentState.State) {
         if (contextText.length < 1000) {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const result = await ai.models.embedContent({
-                model: "text-embedding-004",
+                model: "embedding-001",
                 contents: [{ parts: [{ text: query }] }]
             });
             const vector = result.embeddings?.[0]?.values || [];
