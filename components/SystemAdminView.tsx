@@ -1,3 +1,4 @@
+
 import { SystemConfig, Language, Document } from '../types';
 import { TRANSLATIONS } from '../constants';
 import { Server, Activity, Cpu, Save, Settings, Users, Scale, Loader2, Globe, Layers, History, ShieldCheck, BarChart3, TrendingUp, BrainCircuit, CheckCircle, XCircle, DownloadCloud, Zap, Cloud, HardDrive, Terminal, ShieldAlert, FileJson, RefreshCw, Key, Database, ChevronRight, Workflow, ScanEye } from 'lucide-react';
@@ -49,18 +50,18 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
     };
 
     const handleSyncDatabase = async () => {
-        if (!confirm("Hành động này sẽ xóa vĩnh viễn các Vector trong Pinecone không còn khớp với Database. Bạn có chắc không?")) return;
+        if (!confirm(t.syncAlert)) return;
         setIsSyncing(true);
         try {
             const res = await fetch('/api/app?handler=sync');
             const data = await res.json();
             if (data.success) {
-                alert(data.message || "Đang đồng bộ ngầm...");
+                alert(data.message || t.syncing);
             } else {
-                alert("Đồng bộ thất bại: " + data.error);
+                alert(t.syncFailed + data.error);
             }
         } catch (e: any) {
-            alert("Lỗi kết nối: " + e.message);
+            alert(t.syncFailed + e.message);
         } finally {
             setIsSyncing(false);
         }
@@ -81,11 +82,11 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
         <div className={isEmbedded ? "h-full w-full bg-background p-6" : "p-8 overflow-y-auto"}>
             <div className="max-w-7xl mx-auto space-y-8 pb-20">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-                    <StatusCard icon={<Activity className="text-green-500" />} label="Hệ thống" value="Active" sub="Multi-Cloud Failover" borderColor="border-green-500/20" />
-                    <StatusCard icon={<Zap className="text-orange-500" />} label="AI Engine" value="HYBRID" sub="Llama-3 / Gemini" borderColor="border-orange-500/20" />
-                    <StatusCard icon={<Cloud className="text-blue-500" />} label="Storage" value="CONNECTED" sub="Hybrid Cloud" borderColor="border-blue-500/20" />
-                    <StatusCard icon={<Layers className="text-indigo-500" />} label="Dung lượng" value={`${totalSizeMB} MB`} sub="Hybrid DB" borderColor="border-indigo-500/20" />
-                    <StatusCard icon={<Cpu className="text-amber-500" />} label="Model chính" value={localConfig.chatModel === 'auto' ? "AUTO" : "MANUAL"} sub="Processing Unit" borderColor="border-amber-500/20" />
+                    <StatusCard icon={<Activity className="text-green-500" />} label={t.sysStatus} value={t.sysActive} sub={t.sysFailover} borderColor="border-green-500/20" />
+                    <StatusCard icon={<Zap className="text-orange-500" />} label={t.aiEngine} value={t.aiHybrid} sub={t.aiSub} borderColor="border-orange-500/20" />
+                    <StatusCard icon={<Cloud className="text-blue-500" />} label={t.storage} value={t.storageConnected} sub={t.storageSub} borderColor="border-blue-500/20" />
+                    <StatusCard icon={<Layers className="text-indigo-500" />} label={t.capacity} value={`${totalSizeMB} MB`} sub={t.capacitySub} borderColor="border-indigo-500/20" />
+                    <StatusCard icon={<Cpu className="text-amber-500" />} label={t.mainModel} value={localConfig.chatModel === 'auto' ? "AUTO" : "MANUAL"} sub={t.procUnit} borderColor="border-amber-500/20" />
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -94,25 +95,25 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             <div className="flex items-center justify-between border-b border-border pb-4">
                                 <div className="flex items-center gap-3">
                                     <BrainCircuit className="text-primary" />
-                                    <h3 className="text-xl font-bold uppercase tracking-tight">Cấu hình Suy luận AI</h3>
+                                    <h3 className="text-xl font-bold uppercase tracking-tight">{t.aiConfigTitle}</h3>
                                 </div>
                                 {hasChanges && (
                                     <button onClick={handleSave} disabled={isSaving} className="flex items-center gap-2 px-6 py-2 bg-primary text-white rounded-xl text-xs font-black shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all">
                                         {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                                        LƯU THAY ĐỔI
+                                        {t.saveChanges}
                                     </button>
                                 )}
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <ConfigField label="OCR Strategy (Vision)" sub="Trích xuất chữ từ ảnh/PDF scan">
+                                <ConfigField label={t.ocrStrategy} sub={t.ocrStrategyDesc}>
                                     <select 
                                         value={localConfig.ocrModel || 'auto'}
                                         onChange={e => handleLocalChange('ocrModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <option value="auto">Auto (Khuyên dùng)</option>
-                                        <optgroup label="Gemini 3 (Mới nhất)">
+                                        <option value="auto">{t.autoRecommended}</option>
+                                        <optgroup label="Gemini 3 (Latest)">
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                                             <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
                                         </optgroup>
@@ -127,24 +128,24 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Embedding Model (RAG)" sub="Tạo Vector tìm kiếm (Chỉ dùng Gemini Embedding 1)">
+                                <ConfigField label={t.embeddingModel} sub={t.embeddingModelDesc}>
                                     <select 
                                         value={localConfig.embeddingModel || 'embedding-001'}
                                         onChange={e => handleLocalChange('embeddingModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <option value="embedding-001">Gemini Embedding 1 (Khuyên dùng)</option>
+                                        <option value="embedding-001">Gemini Embedding 1 ({t.autoRecommended.split('(')[1].replace(')', '')})</option>
                                         <option value="text-embedding-3-small">OpenAI Embedding 3 Small</option>
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Analysis Engine" sub="Phân loại và tóm tắt JSON Metadata">
+                                <ConfigField label={t.analysisEngine} sub={t.analysisEngineDesc}>
                                     <select 
                                         value={localConfig.analysisModel || 'auto'}
                                         onChange={e => handleLocalChange('analysisModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <option value="auto">Auto (Tự chọn model tốt nhất)</option>
+                                        <option value="auto">{t.autoBest}</option>
                                         <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
                                         <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                         <option value="gpt-4o-mini">GPT-4o Mini</option>
@@ -152,13 +153,13 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                     </select>
                                 </ConfigField>
 
-                                <ConfigField label="Chat Interface Model" sub="Model tương tác chính với người dùng">
+                                <ConfigField label={t.chatModel} sub={t.chatModelDesc}>
                                     <select 
                                         value={localConfig.chatModel || 'auto'}
                                         onChange={e => handleLocalChange('chatModel', e.target.value)}
                                         className="w-full bg-muted/50 border border-border rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-primary/20 outline-none text-foreground"
                                     >
-                                        <option value="auto">Auto (Dynamic Switching)</option>
+                                        <option value="auto">{t.autoDynamic}</option>
                                         <optgroup label="Gemini 3">
                                             <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
                                             <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
@@ -173,7 +174,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                     </select>
                                 </ConfigField>
                                 
-                                <ConfigField label="Giới hạn Upload" sub="Dung lượng tối đa mỗi file (MB)">
+                                <ConfigField label={t.uploadLimit} sub={t.uploadLimitDesc}>
                                     <input 
                                         type="number"
                                         min="1"
@@ -190,16 +191,16 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             <div className="flex items-center justify-between border-b border-border pb-4">
                                 <div className="flex items-center gap-3">
                                     <Key className="text-orange-500" />
-                                    <h3 className="text-xl font-bold uppercase tracking-tight">API & Security Configuration</h3>
+                                    <h3 className="text-xl font-bold uppercase tracking-tight">{t.apiSecurityTitle}</h3>
                                 </div>
                             </div>
                             
                             <div className="space-y-4">
                                 <p className="text-xs text-muted-foreground italic bg-muted/30 p-3 rounded-lg border border-border">
-                                    Hệ thống ưu tiên sử dụng Key từ Environment Variables. Các Key được cấu hình tại đây sẽ ghi đè nếu được cung cấp.
+                                    {t.envVarNote}
                                 </p>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                                    <ConfigField label="OCR / Vision API Key" sub="Dành riêng cho xử lý file (Tránh Rate Limit)">
+                                    <ConfigField label={t.ocrApiKey} sub={t.ocrApiKeyDesc}>
                                         <div className="relative">
                                             <ScanEye className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
                                             <input 
@@ -219,7 +220,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                     <div className="space-y-8">
                         <div className="bg-card border border-border rounded-[2rem] p-8 shadow-sm space-y-6">
                             <h3 className="text-sm font-black uppercase tracking-widest text-muted-foreground border-b border-border pb-4 flex items-center gap-2">
-                                <Database size={16} /> Quản lý Dữ liệu
+                                <Database size={16} /> {t.dataMgmtTitle}
                             </h3>
                             <div className="space-y-3">
                                 <button onClick={handleDownloadBackup} disabled={isBackingUp} className="w-full flex items-center justify-between p-4 rounded-2xl bg-muted/30 hover:bg-primary/10 border border-border hover:border-primary/20 transition-all group">
@@ -228,8 +229,8 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             {isBackingUp ? <Loader2 size={16} className="animate-spin" /> : <FileJson size={16} />}
                                         </div>
                                         <div className="text-left">
-                                            <div className="text-xs font-bold text-foreground">Sao lưu hệ thống</div>
-                                            <div className="text-[10px] text-muted-foreground">Download JSON backup</div>
+                                            <div className="text-xs font-bold text-foreground">{t.backupSystem}</div>
+                                            <div className="text-[10px] text-muted-foreground">{t.backupDesc}</div>
                                         </div>
                                     </div>
                                     <DownloadCloud size={16} className="text-muted-foreground" />
@@ -241,8 +242,8 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                                             {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
                                         </div>
                                         <div className="text-left">
-                                            <div className="text-xs font-bold text-foreground">Đồng bộ Vector</div>
-                                            <div className="text-[10px] text-muted-foreground">Dọn dẹp Vector rác</div>
+                                            <div className="text-xs font-bold text-foreground">{t.syncVector}</div>
+                                            <div className="text-[10px] text-muted-foreground">{t.syncVectorDesc}</div>
                                         </div>
                                     </div>
                                     <ChevronRight size={16} className="text-muted-foreground" />
@@ -254,7 +255,7 @@ const SystemAdminView: React.FC<SystemAdminViewProps> = ({ config, setConfig, do
                             <div className="px-6 py-4 border-b border-white/5 bg-white/5 flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                     <Terminal size={14} className="text-emerald-500" />
-                                    <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500">System Logs</span>
+                                    <span className="text-[10px] font-black uppercase tracking-widest text-emerald-500">{t.logs}</span>
                                 </div>
                                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.5)]" />
                             </div>
